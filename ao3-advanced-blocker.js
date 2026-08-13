@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name          AO3: Advanced Blocker
-// @version       4.1.1
+// @version       4.2.4
 // @description   Block works by tags, authors, titles, word counts, and more. Filter by language, completion status, and primary pairings with customizable highlighting.
 // @author        BlackBatCat
 // @match         *://archiveofourown.org/
@@ -13,7 +13,7 @@
 // @match         *://archiveofourown.org/bookmarks*
 // @match         *://archiveofourown.org/series/*
 // @license       MIT
-// @require       https://update.greasyfork.org/scripts/552743/1757286/AO3%3A%20Menu%20Helpers%20Library.js?v=2.1.7
+// @require       https://update.greasyfork.org/scripts/552743/1859007/AO3%3A%20Menu%20Helpers%20Library.js?v=2.3.0
 // @grant         none
 // @run-at        document-end
 // @namespace
@@ -24,9 +24,180 @@
 (function () {
   "use strict";
 
+  const html = (strings, ...values) =>
+    strings.reduce(
+      (out, s, i) => out + s + (i < values.length ? values[i] : ""),
+      "",
+    );
+
+  // ============================================================
+  // CONSTANTS
+  // ============================================================
+
+  const CSS_NAMESPACE = "ao3-blocker";
+  const VERSION = "4.2.4"; // Keep in sync with @version in userscript header
+  const WORKS_PAGE_REGEX =
+    /^https?:\/\/archiveofourown\.org\/(works|chapters)\/\d+/;
+
+  const DEFAULTS = {
+    tagBlacklist: "",
+    tagWhitelist: "",
+    tagHighlights: "",
+    highlightColor: "#eb6f92",
+    boldHighlightedTags: false,
+    minWords: "",
+    maxWords: "",
+    minChapters: "",
+    maxChapters: "",
+    maxMonthsSinceUpdate: "",
+    blockComplete: false,
+    blockOngoing: false,
+    authorBlacklist: "",
+    titleBlacklist: "",
+    summaryBlacklist: "",
+    workBlacklist: "",
+    showReasons: true,
+    showPlaceholders: true,
+    allowedLanguages: "",
+    maxCrossovers: "6",
+    disableOnMyContent: true,
+    enableHighlightingOnMyContent: false,
+    username: null,
+    primaryRelationships: "",
+    primaryCharacters: "",
+    primaryRelpad: "1",
+    primaryCharpad: "5",
+    pauseBlocking: false,
+    hideCompletelyRules: {},
+    hideMenu: false,
+    quickAddKey: "Alt",
+    enableStrictTagBlocking: false,
+    strictTagBlacklist: "",
+    conditionalTagBlacklist: [],
+    disableCollapseTransitions: false,
+    _version: VERSION,
+  };
+
+  const STORAGE_KEY = "ao3_advanced_blocker_config";
+
+  const STYLE = `
+  html body .ao3-blocker-hidden { display: none !important; }
+  .ao3-blocker-cut {
+    display: flow-root;
+    overflow: hidden;
+    max-height: 0;
+    opacity: 0;
+    transition: max-height 0.25s ease, opacity 0.25s ease;
+  }
+  .ao3-blocker-cut::after { clear: both; content: ''; display: block; }
+  .ao3-blocker-reason { margin-left: 5px; }
+  .ao3-blocker-hide-reasons .ao3-blocker-reason { display: none; }
+  .ao3-blocker-unhide .ao3-blocker-cut {
+    max-height: var(--ao3-blocker-cut-height, 2000px);
+    opacity: 1;
+    overflow: hidden;
+  }
+  .ao3-blocker-fold {
+    align-items: center; display: flex; justify-content: space-between !important;
+    gap: 10px !important; width: 100% !important;
+    margin-bottom: 0; transition: margin-bottom 0.25s ease;
+  }
+  .ao3-blocker-unhide .ao3-blocker-fold {
+    border-bottom: 1px dashed; border-bottom-color: inherit;
+    margin-bottom: 15px; padding-bottom: inherit;
+  }
+  button.ao3-blocker-toggle {
+    margin-left: auto; min-width: inherit; min-height: inherit; display: flex;
+    align-items: center; justify-content: center; gap: 0.2em; min-width: 80px !important;
+    margin-left: 10px !important; flex-shrink: 0 !important; white-space: nowrap !important;
+    padding: 4px 8px !important; z-index: 5;
+  }
+  .ao3-blocker-note {
+    flex: 1 !important; min-width: 0 !important; word-wrap: break-word !important;
+    overflow-wrap: break-word !important; margin-left: 2.5em !important;
+    position: relative !important; display: block !important;
+  }
+  .ao3-blocker-fold .ao3-blocker-note .ao3-blocker-icon {
+    position: absolute !important; left: -2.0em !important; top: 50% !important; transform: translateY(-50%) !important; margin-right: 0 !important;
+    display: block !important; float: none !important; vertical-align: top !important;
+    width: 1.2em !important; height: 1.2em !important;
+  }
+  .ao3-blocker-toggle span {
+    width: 1em !important; height: 1em !important; display: inline-block;
+    vertical-align: -0.15em; margin-right: 0.2em; background-color: currentColor;
+  }
+  .ao3-blocker-eye-toggle {
+    appearance: none !important; display: inline-block !important;
+    width: 1.2em !important; min-width: 0 !important; max-width: 1.2em !important;
+    height: 1.2em !important; min-height: 0 !important; max-height: 1.2em !important;
+    margin-left: 0.3em !important; margin-right: 0.3em !important;
+    vertical-align: -0.15em !important; color: inherit !important; opacity: 0.75 !important;
+    transition: opacity 0.2s ease !important; border: none !important;
+    border-radius: 0 !important; box-shadow: none !important; outline-offset: 2px !important;
+    padding: 0 !important; cursor: pointer !important; background: none !important;
+    background-color: transparent !important; background-image: none !important;
+    background-origin: padding-box !important; font: inherit !important;
+    font-weight: inherit !important; line-height: 1 !important; white-space: normal !important;
+    text-align: center !important; text-decoration: none !important; transform: none !important;
+  }
+  .ao3-blocker-eye-toggle:hover {
+    opacity: 1.0 !important; border: none !important; box-shadow: none !important;
+    background: none !important; background-color: transparent !important;
+    background-image: none !important; color: inherit !important; transform: none !important;
+  }
+  .ao3-blocker-eye-toggle:focus,
+  .ao3-blocker-eye-toggle:focus-visible {
+    opacity: 0.75 !important; outline: none !important;
+    outline-offset: 0 !important; border: none !important; box-shadow: none !important;
+    background: none !important; background-color: transparent !important;
+    background-image: none !important; color: inherit !important; transform: none !important;
+  }
+  .ao3-blocker-highlight { position: relative !important; }
+  .ao3-blocker-highlight::before {
+    content: '' !important; position: absolute !important; left: 0 !important;
+    top: 0 !important; right: 0 !important; bottom: 0 !important;
+    box-shadow: inset 4px 0 0 0 var(--ao3-blocker-highlight-color, #eb6f92) !important;
+    pointer-events: none !important; border-radius: inherit !important;
+  }
+  .reading .ao3-blocker-highlight h4.viewed {
+    border-left: 4px solid var(--ao3-blocker-highlight-color, #eb6f92) !important;
+  }
+  .tag.ao3-blocker-matched-tag {
+    font-weight: 700 !important;
+  }
+  @keyframes ao3-blocker-slideInRight {
+    from { transform: translateX(400px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+  @keyframes ao3-blocker-slideOutRight {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(400px); opacity: 0; }
+  }
+  `;
+
+  const ICON_HIDE =
+    "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2040%2040%22%3E%3Cg%20data-name%3D%22Eye%20Hidden%22%20id%3D%22Eye_Hidden%22%3E%3Cpath%20d%3D%22M21.67%2C25.2a1%2C1%2C0%2C0%2C0-.86-.28A4.28%2C4.28%2C0%2C0%2C1%2C20%2C25a5%2C5%2C0%2C0%2C1-5-5%2C4.28%2C4.28%2C0%2C0%2C1%2C.08-.81%2C1%2C1%2C0%2C0%2C0-.28-.86l-3.27-3.26a1%2C1%2C0%2C0%2C0-1.38%2C0%2C22.4%2C22.4%2C0%2C0%2C0-3.82%2C4.43%2C1%2C1%2C0%2C0%2C0%2C0%2C1.08C7.59%2C22.49%2C12.35%2C29%2C20%2C29A13.43%2C13.43%2C0%2C0%2C0%2C23%2C28.67%2C1%2C1%2C0%2C0%2C0%2C23.44%2C27Z%22%2F%3E%3Cpath%20d%3D%22M33.67%2C19.46C32.41%2C17.51%2C27.65%2C11%2C20%2C11a13.58%2C13.58%2C0%2C0%2C0-6.11%2C1.48l-1.18-1.19a1%2C1%2C0%2C0%2C0-1.42%2C1.42l16%2C16a1%2C1%2C0%2C0%2C0%2C1.42%2C0%2C1%2C1%2C0%2C0%2C0%2C0-1.42l-.82-.81a21.53%2C21.53%2C0%2C0%2C0%2C5.78-5.94A1%2C1%2C0%2C0%2C0%2C33.67%2C19.46Zm-9.5%2C3.29-6.92-6.92a5%2C5%2C0%2C0%2C1%2C4.03-.69%2C4.93%2C4.93%2C0%2C0%2C1%2C3.68%2C3.68A5%2C5%2C0%2C0%2C1%2C24.17%2C22.75Z%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E";
+  const ICON_EYE =
+    "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2040%2040%22%3E%3Cg%20data-name%3D%22Eye%20Visible%22%20id%3D%22Eye_Visible%22%3E%3Cpath%20d%3D%22M33.67%2C19.46C32.42%2C17.51%2C27.66%2C11%2C20%2C11S7.58%2C17.51%2C6.33%2C19.46a1%2C1%2C0%2C0%2C0%2C0%2C1.08C7.58%2C22.49%2C12.34%2C29%2C20%2C29s12.42-6.51%2C13.67-8.46A1%2C1%2C0%2C0%2C0%2C33.67%2C19.46ZM20%2C25a5%2C5%2C0%2C1%2C1%2C5-5A5%2C5%2C0%2C0%2C1%2C20%2C25Z%22%2F%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%223%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E";
+
+  // ============================================================
+  // STATE
+  // ============================================================
+
   let quickAddKeyPressed = false;
   let cachedUsername = null;
   let checkWorksTimeout = null;
+
+  const normalizationCache = new Map();
+
+  window.ao3Blocker = {};
+  try {
+    console.log("[AO3: Advanced Blocker] loaded.");
+  } catch (e) {}
+
+  // ============================================================
+  // UTILITY FUNCTIONS
+  // ============================================================
 
   function relationshipPowerSet(characters) {
     // we're matching on all ships that contain at least two of your specified characters
@@ -82,100 +253,11 @@
       });
   }
 
-  function scheduleCheckWorks() {
-    if (checkWorksTimeout) {
-      clearTimeout(checkWorksTimeout);
-    }
-    checkWorksTimeout = setTimeout(() => {
-      clearProcessedFlags();
-      checkWorks();
-      checkWorksTimeout = null;
-    }, 100);
-  }
-  function detectUsername(config) {
-    if (cachedUsername) return cachedUsername;
-    if (config.username) {
-      cachedUsername = config.username;
-      return config.username;
-    }
-    const userLink = document.querySelector(
-      'li.user.logged-in a[href^="/users/"]',
-    );
-    if (userLink) {
-      const username = userLink.textContent.trim();
-      if (username && config.username !== username) {
-        config.username = username;
-        saveConfig(config);
-      }
-      cachedUsername = username;
-      return username;
-    }
-    const urlMatch = window.location.href.match(/\/users\/([^\/]+)/);
-    if (urlMatch && urlMatch[1]) {
-      const username = urlMatch[1];
-      if (config.username !== username) {
-        config.username = username;
-        saveConfig(config);
-      }
-      cachedUsername = username;
-      return username;
-    }
-    return null;
-  }
-
-  window.ao3Blocker = {};
-  try {
-    console.log("[AO3: Advanced Blocker] loaded.");
-  } catch (e) {}
-
-  const normalizationCache = new Map();
-
-  const CSS_NAMESPACE = "ao3-blocker";
-  const VERSION = "4.1.0"; // Keep in sync with @version in userscript header
-  const WORKS_PAGE_REGEX =
-    /^https?:\/\/archiveofourown\.org\/(works|chapters)\/\d+/;
-
-  const DEFAULTS = {
-    tagBlacklist: "",
-    tagWhitelist: "",
-    tagHighlights: "",
-    highlightColor: "#eb6f92",
-    boldHighlightedTags: false,
-    minWords: "",
-    maxWords: "",
-    minChapters: "",
-    maxChapters: "",
-    maxMonthsSinceUpdate: "",
-    blockComplete: false,
-    blockOngoing: false,
-    authorBlacklist: "",
-    titleBlacklist: "",
-    summaryBlacklist: "",
-    workBlacklist: "",
-    showReasons: true,
-    showPlaceholders: true,
-    allowedLanguages: "",
-    maxCrossovers: "6",
-    disableOnMyContent: true,
-    enableHighlightingOnMyContent: false,
-    username: null,
-    primaryRelationships: "",
-    primaryCharacters: "",
-    primaryRelpad: "1",
-    primaryCharpad: "5",
-    pauseBlocking: false,
-    hideCompletelyRules: {},
-    hideMenu: false,
-    quickAddKey: "Alt",
-    enableStrictTagBlocking: false,
-    strictTagBlacklist: "",
-    conditionalTagBlacklist: [],
-    disableCollapseTransitions: false,
-    _version: VERSION,
-  };
-
-  const STORAGE_KEY = "ao3_advanced_blocker_config";
-
+  /**
+   * Sanitizes raw config, validating string/bool fields and conditionalTagBlacklist.
+   * @param {Object} config - raw config from localStorage
+   * @returns {Object} sanitized config matching DEFAULTS shape
+   */
   function sanitizeConfig(config) {
     const sanitized = {};
     const stringFields = [
@@ -308,98 +390,66 @@
   }
 
   // Load and set the global config
-  window.ao3Blocker.config = sanitizeConfig(
-    JSON.parse(localStorage.getItem(STORAGE_KEY)) || DEFAULTS,
-  );
+  try {
+    window.ao3Blocker.config = sanitizeConfig(
+      JSON.parse(localStorage.getItem(STORAGE_KEY)) || DEFAULTS,
+    );
+  } catch (e) {
+    window.ao3Blocker.config = sanitizeConfig(DEFAULTS);
+  }
 
-  const STYLE = `
-  html body .ao3-blocker-hidden { display: none !important; }
-  .ao3-blocker-cut {
-    display: flow-root;
-    overflow: hidden;
-    max-height: 0;
-    opacity: 0;
-    transition: max-height 0.25s ease, opacity 0.25s ease;
+  /** Debounces checkWorks via 100ms timeout, clearing previous pending call. */
+  function scheduleCheckWorks() {
+    if (checkWorksTimeout) {
+      clearTimeout(checkWorksTimeout);
+    }
+    checkWorksTimeout = setTimeout(() => {
+      clearProcessedFlags();
+      checkWorks();
+      checkWorksTimeout = null;
+    }, 100);
   }
-  .ao3-blocker-cut::after { clear: both; content: ''; display: block; }
-  .ao3-blocker-reason { margin-left: 5px; }
-  .ao3-blocker-hide-reasons .ao3-blocker-reason { display: none; }
-  .ao3-blocker-unhide .ao3-blocker-cut {
-    max-height: var(--ao3-blocker-cut-height, 2000px);
-    opacity: 1;
-    overflow: hidden;
+
+  /**
+   * Detects the logged-in username, memoized for the lifetime of the page.
+   * Delegates to MHL, which only persists authoritative (header-derived)
+   * detections — never the non-authoritative URL fallback. Only
+   * authoritative results are cached here too, so a later call (after the
+   * header has rendered) can still recover the real username instead of
+   * being stuck on an unreliable URL guess for the rest of the page.
+   */
+  function detectUsername(config) {
+    if (cachedUsername) return cachedUsername;
+    const { username, isAuthoritative } = window.AO3MenuHelpers.detectUsername({
+      getStored: () => config.username,
+      setStored: (username) => {
+        config.username = username;
+        saveConfig(config);
+      },
+    });
+    if (username && isAuthoritative) cachedUsername = username;
+    return username;
   }
-  .ao3-blocker-fold {
-    align-items: center; display: flex; justify-content: space-between !important;
-    gap: 10px !important; width: 100% !important;
-    margin-bottom: 0; transition: margin-bottom 0.25s ease;
-  }
-  .ao3-blocker-unhide .ao3-blocker-fold {
-    border-bottom: 1px dashed; border-bottom-color: inherit;
-    margin-bottom: 15px; padding-bottom: inherit;
-  }
-  button.ao3-blocker-toggle {
-    margin-left: auto; min-width: inherit; min-height: inherit; display: flex;
-    align-items: center; justify-content: center; gap: 0.2em; min-width: 80px !important;
-    margin-left: 10px !important; flex-shrink: 0 !important; white-space: nowrap !important;
-    padding: 4px 8px !important;
-  }
-  .ao3-blocker-note {
-    flex: 1 !important; min-width: 0 !important; word-wrap: break-word !important;
-    overflow-wrap: break-word !important; margin-left: 2.5em !important;
-    position: relative !important; display: block !important;
-  }
-  .ao3-blocker-fold .ao3-blocker-note .ao3-blocker-icon {
-    position: absolute !important; left: -2.0em !important; top: 50% !important; transform: translateY(-50%) !important; margin-right: 0 !important;
-    display: block !important; float: none !important; vertical-align: top !important;
-    width: 1.2em !important; height: 1.2em !important;
-  }
-  .ao3-blocker-toggle span {
-    width: 1em !important; height: 1em !important; display: inline-block;
-    vertical-align: -0.15em; margin-right: 0.2em; background-color: currentColor;
-  }
-  .ao3-blocker-eye-toggle {
-    display: inline-block; width: 1.2em; height: 1.2em; margin-left: 0.3em; margin-right: 0.3em;
-    vertical-align: -0.15em; color: inherit; opacity: 0.75; transition: opacity 0.2s ease;
-    border: none; padding: 0; cursor: pointer; background: none;
-  }
-  .ao3-blocker-eye-toggle:hover { opacity: 1.0; }
-  .ao3-blocker-eye-toggle:focus { outline: 2px solid currentColor; outline-offset: 2px; }
-  .ao3-blocker-highlight { position: relative !important; }
-  .ao3-blocker-highlight::before {
-    content: '' !important; position: absolute !important; left: 0 !important;
-    top: 0 !important; right: 0 !important; bottom: 0 !important;
-    box-shadow: inset 4px 0 0 0 var(--ao3-blocker-highlight-color, #eb6f92) !important;
-    pointer-events: none !important; border-radius: inherit !important;
-  }
-  .reading .ao3-blocker-highlight h4.viewed {
-    border-left: 4px solid var(--ao3-blocker-highlight-color, #eb6f92) !important;
-  }
-  .tag.ao3-blocker-matched-tag {
-    font-weight: 700 !important;
-  }
-  @keyframes ao3-blocker-slideInRight {
-    from { transform: translateX(400px); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
-  }
-  @keyframes ao3-blocker-slideOutRight {
-    from { transform: translateX(0); opacity: 1; }
-    to { transform: translateX(400px); opacity: 0; }
-  }
-  `;
+
+  // ============================================================
+  // DOM / UI
+  // ============================================================
 
   function createEyeToggle(filterId, initialState) {
     const button = document.createElement("button");
+    button.type = "button";
     button.className = "ao3-blocker-eye-toggle";
     button.setAttribute("data-filter-id", filterId);
     button.setAttribute("aria-label", `Toggle hide completely for ${filterId}`);
     button.setAttribute("aria-pressed", initialState ? "true" : "false");
     button.setAttribute("title", "Hide works completely");
-    button.innerHTML = `<span style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;background-color:currentColor;mask:url('${
-      initialState ? ICON_HIDE : ICON_EYE
-    }') no-repeat center/contain;-webkit-mask:url('${
-      initialState ? ICON_HIDE : ICON_EYE
-    }') no-repeat center/contain;"></span>`;
+    button.innerHTML = html`<span
+      style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;background-color:currentColor;mask:url('${initialState
+        ? ICON_HIDE
+        : ICON_EYE}') no-repeat center/contain;-webkit-mask:url('${initialState
+        ? ICON_HIDE
+        : ICON_EYE}') no-repeat center/contain;"
+    ></span>`;
     button.addEventListener("click", () => {
       const currentPressed = button.getAttribute("aria-pressed") === "true";
       const newPressed = !currentPressed;
@@ -433,11 +483,14 @@
     return element;
   }
 
-  const ICON_HIDE =
-    "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2040%2040%22%3E%3Cg%20data-name%3D%22Eye%20Hidden%22%20id%3D%22Eye_Hidden%22%3E%3Cpath%20d%3D%22M21.67%2C25.2a1%2C1%2C0%2C0%2C0-.86-.28A4.28%2C4.28%2C0%2C0%2C1%2C20%2C25a5%2C5%2C0%2C0%2C1-5-5%2C4.28%2C4.28%2C0%2C0%2C1%2C.08-.81%2C1%2C1%2C0%2C0%2C0-.28-.86l-3.27-3.26a1%2C1%2C0%2C0%2C0-1.38%2C0%2C22.4%2C22.4%2C0%2C0%2C0-3.82%2C4.43%2C1%2C1%2C0%2C0%2C0%2C0%2C1.08C7.59%2C22.49%2C12.35%2C29%2C20%2C29A13.43%2C13.43%2C0%2C0%2C0%2C23%2C28.67%2C1%2C1%2C0%2C0%2C0%2C23.44%2C27Z%22%2F%3E%3Cpath%20d%3D%22M33.67%2C19.46C32.41%2C17.51%2C27.65%2C11%2C20%2C11a13.58%2C13.58%2C0%2C0%2C0-6.11%2C1.48l-1.18-1.19a1%2C1%2C0%2C0%2C0-1.42%2C1.42l16%2C16a1%2C1%2C0%2C0%2C0%2C1.42%2C0%2C1%2C1%2C0%2C0%2C0%2C0-1.42l-.82-.81a21.53%2C21.53%2C0%2C0%2C0%2C5.78-5.94A1%2C1%2C0%2C0%2C0%2C33.67%2C19.46Zm-9.5%2C3.29-6.92-6.92a5%2C5%2C0%2C0%2C1%2C4.03-.69%2C4.93%2C4.93%2C0%2C0%2C1%2C3.68%2C3.68A5%2C5%2C0%2C0%2C1%2C24.17%2C22.75Z%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E";
-  const ICON_EYE =
-    "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2040%2040%22%3E%3Cg%20data-name%3D%22Eye%20Visible%22%20id%3D%22Eye_Visible%22%3E%3Cpath%20d%3D%22M33.67%2C19.46C32.42%2C17.51%2C27.66%2C11%2C20%2C11S7.58%2C17.51%2C6.33%2C19.46a1%2C1%2C0%2C0%2C0%2C0%2C1.08C7.58%2C22.49%2C12.34%2C29%2C20%2C29s12.42-6.51%2C13.67-8.46A1%2C1%2C0%2C0%2C0%2C33.67%2C19.46ZM20%2C25a5%2C5%2C0%2C1%2C1%2C5-5A5%2C5%2C0%2C0%2C1%2C20%2C25Z%22%2F%3E%3Ccircle%20cx%3D%2220%22%20cy%3D%2220%22%20r%3D%223%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E";
+  // ── Pattern matching ──────────────────────────────────
 
+  /**
+   * Compiles a pattern string into a matchable object.
+   * Supports * wildcards with word-boundary-aware regex.
+   * @param {string} pattern
+   * @returns {{ originalText: string, text: string, hasWildcard: boolean, regex?: RegExp, exactRegex?: RegExp }}
+   */
   function compilePattern(pattern) {
     const hasWildcard = pattern.includes("*");
     if (hasWildcard) {
@@ -464,6 +517,11 @@
     return { originalText: pattern, text: normalized, hasWildcard: false };
   }
 
+  /**
+   * Parses a conditional entry like "Tag with:{Cond}" or "Tag unless:{Cond}".
+   * @param {string} entry
+   * @returns {{ item: string, operator?: string, condition?: string }}
+   */
   function parseConditional(entry) {
     const trimmed = entry.trim();
     const withMatch = trimmed.match(/^(.+?)\s+with:\{(.+?)\}$/i);
@@ -485,18 +543,93 @@
     }
   }
 
+  /**
+   * Splits a comma-separated config string, respecting { } nesting depth.
+   * @param {string} raw
+   * @returns {string[]} trimmed, non-empty entries
+   */
+  function splitEntries(raw) {
+    const entries = [];
+    let depth = 0,
+      start = 0;
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i] === "{") depth++;
+      if (raw[i] === "}") depth--;
+      if (raw[i] === "," && depth === 0) {
+        entries.push(raw.slice(start, i));
+        start = i + 1;
+      }
+    }
+    entries.push(raw.slice(start));
+    return entries.map((s) => s.trim()).filter(Boolean);
+  }
+
+  /**
+   * Parses a condition string: "A,B" = AND, "A||B" = OR, single value = literal.
+   * @param {string} rawCondition
+   * @returns {{ conditions: Array, joinMode: string } | { text: string, hasWildcard: boolean }}
+   */
+  function parseConditions(rawCondition) {
+    if (rawCondition.includes("||")) {
+      const parts = rawCondition
+        .split("||")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return {
+        conditions: parts.map(compilePattern),
+        joinMode: "or",
+      };
+    }
+    if (rawCondition.includes(",")) {
+      const parts = rawCondition
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return {
+        conditions: parts.map(compilePattern),
+        joinMode: "and",
+      };
+    }
+    return compilePattern(rawCondition);
+  }
+
+  /**
+   * Tests whether a compiled condition matches any tag in a list.
+   * @param {Object} condition - compiled condition from parseConditions
+   * @param {string[]} tags
+   * @param {boolean} exactMatch
+   * @returns {boolean}
+   */
+  function matchesCondition(condition, tags, exactMatch) {
+    if (!condition) return true;
+    // Old format: single compiled pattern { text, hasWildcard }
+    if (!condition.conditions)
+      return tags.some((tag) => matchPattern(tag, condition, exactMatch));
+    const hits = condition.conditions.map((c) =>
+      tags.some((tag) => matchPattern(tag, c, exactMatch)),
+    );
+    return condition.joinMode === "and"
+      ? hits.every(Boolean)
+      : hits.some(Boolean);
+  }
+
   function checkConditional(entry, allTags) {
     if (!entry.condition || !entry.operator) return true;
-    // Check if any tag matches the condition pattern (supports wildcards)
-    const hasCondition = allTags.some((tag) =>
-      matchPattern(tag, entry.condition, false),
-    );
+    const hasCondition = matchesCondition(entry.condition, allTags, true);
     return (
       (entry.operator === "with" && hasCondition) ||
       (entry.operator === "unless" && !hasCondition)
     );
   }
 
+  // ============================================================
+  // STORAGE
+  // ============================================================
+
+  /**
+   * Loads config from localStorage, sanitizing if version mismatch detected.
+   * @returns {Object} config
+   */
   function loadConfig() {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
@@ -516,6 +649,11 @@
     }
   }
 
+  /**
+   * Persists config to localStorage.
+   * @param {Object} config
+   * @returns {boolean} success
+   */
   function saveConfig(config) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
@@ -526,6 +664,12 @@
     }
   }
 
+  // ── Page & parsing utilities ──────────────────────────
+
+  /**
+   * Checks whether the current page belongs to the given username,
+   * matching dashboard, works, bookmarks, readings, and individual bookmark pages.
+   */
   function isMyContentPage(username) {
     if (!username || !username.trim()) return false;
     const escapedUsername = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -546,6 +690,11 @@
     return false;
   }
 
+  /**
+   * Determines if a work is complete or ongoing from its chapters text.
+   * @param {string} chaptersText - e.g. "3/12" or "5/?"
+   * @returns {"complete"|"ongoing"|null}
+   */
   function parseChaptersStatus(chaptersText) {
     if (!chaptersText) return null;
     const cleaned = chaptersText.replace(/&nbsp;/gi, " ").trim();
@@ -565,6 +714,11 @@
     return "ongoing";
   }
 
+  /**
+   * Extracts and categorizes all tags from a blurb element's tag list.
+   * @param {HTMLElement} container - the blurb element
+   * @returns {{ categorized: Object, flat: string[] }}
+   */
   function getCategorizedAndFlatTags(container) {
     const tags = {
       ratings: [],
@@ -667,6 +821,14 @@
     return { categorized: tags, flat: flat };
   }
 
+  // ── Text processing ───────────────────────────────────
+
+  /**
+   * Normalizes text to lowercase for case-insensitive comparison.
+   * Results are cached in normalizationCache.
+   * @param {string} text
+   * @returns {string}
+   */
   function normalizeText(text) {
     if (typeof text !== "string") return "";
     if (normalizationCache.has(text)) {
@@ -677,10 +839,17 @@
     return normalized;
   }
 
+  /** Escapes regex-special characters in a string for literal matching. */
   function escapeRegex(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
+  /**
+   * Returns the substring of text that matches a compiled pattern or raw string.
+   * @param {string} text
+   * @param {string|Object} pattern - raw string or compiled pattern object
+   * @returns {string|null}
+   */
   function getMatchedSubstring(text, pattern) {
     let regex;
     if (typeof pattern === "string") {
@@ -696,6 +865,13 @@
     return match ? match[0] : null;
   }
 
+  // ── Notification helpers ──────────────────────────────
+
+  /**
+   * Creates a temporary input to sample page styles, then builds a fixed-position
+   * notification div. Auto-removes after 2 seconds with slide-out animation.
+   * @param {string} message - plain text message to display
+   */
   function showQuickAddNotification(message) {
     const existing = document.getElementById(
       "ao3-blocker-quickadd-notification",
@@ -722,6 +898,10 @@
     }, 2000);
   }
 
+  /**
+   * Clears the `ao3-blocker-processed` class from all works and resets the
+   * normalization cache. Called before re-scanning works.
+   */
   function clearProcessedFlags() {
     const processedWorks = document.querySelectorAll(
       `.${CSS_NAMESPACE}-processed`,
@@ -732,17 +912,23 @@
     normalizationCache.clear();
   }
 
+  // ============================================================
+  // CORE LOGIC
+  // ============================================================
+
+  /**
+   * Main work-scanning loop. Applies all blocking, whitelisting, and highlighting rules
+   * to every blurb on the page.
+   */
   function checkWorks() {
     const config = window.ao3Blocker.config;
-    let blocked = 0;
-    let total = 0;
     if (config.pauseBlocking) {
       return;
     }
 
     let isOnMyContent = false;
 
-    const username = config.username;
+    const username = detectUsername(config);
     if (config.disableOnMyContent && username) {
       isOnMyContent = isMyContentPage(username);
       if (isOnMyContent && !config.enableHighlightingOnMyContent) return;
@@ -781,7 +967,6 @@
           : "work";
       const blockables = selectFromBlurb(blurbEl);
       const allTags = blockables.tags;
-      total++;
       let shouldHighlight = false;
       const matchedTags = new Set();
       if (config.tagHighlights.length > 0) {
@@ -796,7 +981,7 @@
                   // For "with" conditionals, also highlight the condition tag
                   if (item.operator === "with") {
                     const conditionTag = allTags.find((t) =>
-                      matchPattern(t, item.condition, false),
+                      matchesCondition(item.condition, [t], true),
                     );
                     if (conditionTag) {
                       matchedTags.add(normalizeText(conditionTag));
@@ -832,13 +1017,21 @@
         reason = getBlockReason(blockables, config, blurbEl, blurbType);
       if (reason) {
         blockWork(blurbEl, reason, config);
-        blocked++;
       } else {
         blurbEl.classList.add(`${CSS_NAMESPACE}-processed`);
       }
     });
   }
 
+  // ============================================================
+  // EVENT HANDLERS
+  // ============================================================
+
+  /**
+   * Global click handler for Quick-Add: Alt+Click adds tags/authors/works to blacklists.
+   * Skips propagation and temporarily disables link navigation.
+   * @param {MouseEvent} event
+   */
   function handleQuickAdd(event) {
     if (!quickAddKeyPressed) return;
     const target = event.target;
@@ -886,11 +1079,8 @@
         ? "_rawStrictTagBlacklist"
         : "_rawTagBlacklist";
       window.ao3Blocker.config[rawField] = updatedTags;
-      window.ao3Blocker.config[targetList] = updatedTags
-        .split(/,(?:\s)?/g)
-        .map((i) => i.trim())
-        .filter(Boolean)
-        .map((i) => {
+      window.ao3Blocker.config[targetList] = splitEntries(updatedTags).map(
+        (i) => {
           if (useStrictBlacklist) {
             const parsed = parseConditional(i);
             if (parsed.operator) {
@@ -898,7 +1088,7 @@
                 type: "conditional",
                 block: compilePattern(parsed.item),
                 operator: parsed.operator,
-                condition: compilePattern(parsed.condition),
+                condition: parseConditions(parsed.condition),
               };
             } else {
               return { type: "simple", pattern: compilePattern(parsed.item) };
@@ -906,7 +1096,8 @@
           } else {
             return compilePattern(i);
           }
-        });
+        },
+      );
       scheduleCheckWorks();
 
       const listName = useStrictBlacklist
@@ -1047,6 +1238,11 @@
     }
   }
 
+  /**
+   * Bolds highlighted tags on individual work pages (not listing pages).
+   * Called from initConfig when on a /works/ or /chapters/ URL.
+   * @param {Object} config
+   */
   function highlightTagsOnWorkPage(config) {
     if (
       !config.boldHighlightedTags ||
@@ -1066,8 +1262,10 @@
         const item = config.tagHighlights[i];
         if (item.type === "conditional") {
           if (matchPattern(tagText, item.block, true)) {
-            const hasCondition = allTagTexts.some((t) =>
-              matchPattern(t, item.condition, true),
+            const hasCondition = matchesCondition(
+              item.condition,
+              allTagTexts,
+              true,
             );
             if (
               (item.operator === "with" && hasCondition) ||
@@ -1079,7 +1277,7 @@
               if (item.operator === "with" && hasCondition) {
                 for (const condTagEl of tagLinks) {
                   const condTagText = condTagEl.textContent.trim();
-                  if (matchPattern(condTagText, item.condition, true)) {
+                  if (matchesCondition(item.condition, [condTagText], true)) {
                     condTagEl.classList.add("ao3-blocker-matched-tag");
                     break;
                   }
@@ -1102,6 +1300,10 @@
     }
   }
 
+  // ============================================================
+  // INITIALIZATION
+  // ============================================================
+
   function initConfig() {
     if (WORKS_PAGE_REGEX.test(window.location.href)) {
       // Minimal init for works pages: only load config and highlight if enabled
@@ -1114,23 +1316,21 @@
         config.tagHighlights.length > 0
       ) {
         // Process tagHighlights for works pages
-        window.ao3Blocker.config.tagHighlights = config.tagHighlights
-          .split(/,(?:\s)?/g)
-          .map((i) => i.trim())
-          .filter(Boolean)
-          .map((i) => {
-            const parsed = parseConditional(i);
-            if (parsed.operator) {
-              return {
-                type: "conditional",
-                block: compilePattern(parsed.item),
-                operator: parsed.operator,
-                condition: compilePattern(parsed.condition),
-              };
-            } else {
-              return { type: "simple", pattern: compilePattern(parsed.item) };
-            }
-          });
+        window.ao3Blocker.config.tagHighlights = splitEntries(
+          config.tagHighlights,
+        ).map((i) => {
+          const parsed = parseConditional(i);
+          if (parsed.operator) {
+            return {
+              type: "conditional",
+              block: compilePattern(parsed.item),
+              operator: parsed.operator,
+              condition: parseConditions(parsed.condition),
+            };
+          } else {
+            return { type: "simple", pattern: compilePattern(parsed.item) };
+          }
+        });
         highlightTagsOnWorkPage(window.ao3Blocker.config);
       }
       return;
@@ -1207,71 +1407,55 @@
           .map((i) => i.trim())
           .filter(Boolean)
           .map(compilePattern),
-        tagBlacklist: rawTagBlacklist
-          .split(/,(?:\s)?/g)
-          .map((i) => i.trim())
-          .filter(Boolean)
-          .map(compilePattern),
+        tagBlacklist: splitEntries(rawTagBlacklist).map(compilePattern),
         conditionalTagBlacklist: (config.conditionalTagBlacklist || []).map(
           (rule) => ({
             block: compilePattern(rule.block),
             operator: rule.operator,
-            condition: compilePattern(rule.condition),
+            condition: parseConditions(rule.condition),
             display: rule.display,
           }),
         ),
-        strictTagBlacklist: rawStrictTagBlacklist
-          .split(/,(?:\s)?/g)
-          .map((i) => i.trim())
-          .filter(Boolean)
-          .map((i) => {
-            const parsed = parseConditional(i);
-            if (parsed.operator) {
-              return {
-                type: "conditional",
-                block: compilePattern(parsed.item),
-                operator: parsed.operator,
-                condition: compilePattern(parsed.condition),
-              };
-            } else {
-              return { type: "simple", pattern: compilePattern(parsed.item) };
-            }
-          }),
+        strictTagBlacklist: splitEntries(rawStrictTagBlacklist).map((i) => {
+          const parsed = parseConditional(i);
+          if (parsed.operator) {
+            return {
+              type: "conditional",
+              block: compilePattern(parsed.item),
+              operator: parsed.operator,
+              condition: parseConditions(parsed.condition),
+            };
+          } else {
+            return { type: "simple", pattern: compilePattern(parsed.item) };
+          }
+        }),
         enableStrictTagBlocking: !!config.enableStrictTagBlocking,
-        tagWhitelist: rawTagWhitelist
-          .split(/,(?:\s)?/g)
-          .map((i) => i.trim())
-          .filter(Boolean)
-          .map((i) => {
-            const parsed = parseConditional(i);
-            if (parsed.operator) {
-              return {
-                type: "conditional",
-                block: compilePattern(parsed.item),
-                operator: parsed.operator,
-                condition: compilePattern(parsed.condition),
-              };
-            } else {
-              return { type: "simple", pattern: compilePattern(parsed.item) };
-            }
-          }),
-        tagHighlights: rawTagHighlights
-          .split(/,(?:\s)?/g)
-          .map((i) => i.trim())
-          .filter(Boolean)
-          .map((i) => {
-            const parsed = parseConditional(i);
-            if (parsed.operator) {
-              return {
-                type: "conditional",
-                block: compilePattern(parsed.item),
-                operator: parsed.operator,
-                condition: compilePattern(parsed.condition),
-              };
-            } else {
-              return { type: "simple", pattern: compilePattern(parsed.item) };
-            }
-          }),
+        tagWhitelist: splitEntries(rawTagWhitelist).map((i) => {
+          const parsed = parseConditional(i);
+          if (parsed.operator) {
+            return {
+              type: "conditional",
+              block: compilePattern(parsed.item),
+              operator: parsed.operator,
+              condition: parseConditions(parsed.condition),
+            };
+          } else {
+            return { type: "simple", pattern: compilePattern(parsed.item) };
+          }
+        }),
+        tagHighlights: splitEntries(rawTagHighlights).map((i) => {
+          const parsed = parseConditional(i);
+          if (parsed.operator) {
+            return {
+              type: "conditional",
+              block: compilePattern(parsed.item),
+              operator: parsed.operator,
+              condition: parseConditions(parsed.condition),
+            };
+          } else {
+            return { type: "simple", pattern: compilePattern(parsed.item) };
+          }
+        }),
         summaryBlacklist: rawSummaryBlacklist
           .split(/,(?:\s)?/g)
           .map((i) => i.trim())
@@ -1327,22 +1511,28 @@
         })(),
         blockComplete: config.blockComplete,
         blockOngoing: config.blockOngoing,
-        primaryRelationships: rawPrimaryRelationships
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .map((s) => {
-            const parsed = parseConditional(s);
-            return parsed.operator ? parsed : { relationship: parsed.item };
-          }),
-        primaryCharacters: rawPrimaryCharacters
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .map((s) => {
-            const parsed = parseConditional(s);
-            return parsed.operator ? parsed : { character: parsed.item };
-          }),
+        primaryRelationships: splitEntries(rawPrimaryRelationships).map((s) => {
+          const parsed = parseConditional(s);
+          if (parsed.operator) {
+            return {
+              block: compilePattern(parsed.item),
+              operator: parsed.operator,
+              condition: parseConditions(parsed.condition),
+            };
+          }
+          return { relationship: compilePattern(parsed.item) };
+        }),
+        primaryCharacters: splitEntries(rawPrimaryCharacters).map((s) => {
+          const parsed = parseConditional(s);
+          if (parsed.operator) {
+            return {
+              block: compilePattern(parsed.item),
+              operator: parsed.operator,
+              condition: parseConditions(parsed.condition),
+            };
+          }
+          return { character: compilePattern(parsed.item) };
+        }),
         primaryRelpad: (() => {
           const val = config.primaryRelpad;
           const parsed = parseInt(val, 10);
@@ -1412,6 +1602,9 @@
     document.addEventListener("keyup", (e) => {
       if (e.key === quickAddKey) quickAddKeyPressed = false;
     });
+    window.addEventListener("blur", () => {
+      quickAddKeyPressed = false;
+    });
   }
 
   if (document.readyState === "loading") {
@@ -1420,6 +1613,12 @@
     initConfig();
   }
 
+  // ── Menu integration ──────────────────────────────────
+
+  /**
+   * Creates the "Userscripts" header dropdown and adds the Advanced Blocker
+   * menu item + pause/resume toggle. Skips on individual work pages.
+   */
   function initSharedMenu() {
     if (WORKS_PAGE_REGEX.test(window.location.href)) return;
 
@@ -1437,8 +1636,14 @@
       menuContainer = document.createElement("li");
       menuContainer.className = "dropdown";
       menuContainer.id = "scriptconfig";
-      menuContainer.innerHTML = `
-        <a class="dropdown-toggle" href="/" data-toggle="dropdown" data-target="#">Userscripts</a>
+      menuContainer.innerHTML = html`
+        <a
+          class="dropdown-toggle"
+          href="/"
+          data-toggle="dropdown"
+          data-target="#"
+          >Userscripts</a
+        >
         <ul class="menu dropdown-menu"></ul>
       `;
       headerMenu.insertBefore(menuContainer, searchItem);
@@ -1446,7 +1651,7 @@
 
     const menu = menuContainer.querySelector(".dropdown-menu");
     if (menu) {
-      const username = config.username || detectUsername(config);
+      const username = detectUsername(config);
       const isOnMyContent =
         config.disableOnMyContent && username && isMyContentPage(username);
 
@@ -1491,6 +1696,12 @@
     initSharedMenu();
   }
 
+  // ── Style injection ───────────────────────────────────
+
+  /**
+   * Injects or updates the ao3-blocker stylesheet. Optionally strips CSS
+   * transitions if disableCollapseTransitions config is set.
+   */
   function addStyle() {
     const config = window.ao3Blocker.config;
     let css = STYLE;
@@ -1515,6 +1726,28 @@
     document.head.appendChild(style);
   }
 
+  function getFullTagBlacklistValue(config) {
+    const parts = [];
+    if (config._rawTagBlacklist && config._rawTagBlacklist.trim()) {
+      parts.push(config._rawTagBlacklist.trim());
+    }
+    if (
+      config.conditionalTagBlacklist &&
+      config.conditionalTagBlacklist.length > 0
+    ) {
+      config.conditionalTagBlacklist.forEach((entry) => {
+        if (entry.display) parts.push(entry.display);
+      });
+    }
+    return parts.join(", ");
+  }
+
+  // ── Settings dialog ───────────────────────────────────
+
+  /**
+   * Builds and displays the settings dialog using MHL form controls.
+   * All tag/content filters, pairing rules, and display options configured here.
+   */
   function showBlockerMenu() {
     if (!window.AO3MenuHelpers) {
       alert(
@@ -1524,38 +1757,139 @@
     }
     window.AO3MenuHelpers.removeAllDialogs();
     const config = window.ao3Blocker.config;
+
+    function showInfoModal() {
+      window.AO3MenuHelpers.createMenuModal({
+        content: html` <h3>Advanced Blocker: Filter Syntax</h3>
+          <p>
+            Separate multiple entries with commas. Tags match exactly and ignore
+            capitalization, so use <kbd>*</kbd> for partial matches. Titles and
+            summaries match anywhere automatically. Authors must be the full
+            pseud (capitalization ignored). Not every operator works in every
+            field, as noted below.
+          </p>
+
+          <h4>Wildcards</h4>
+          <dl>
+            <dt>*: any characters, including none</dt>
+            <dd>
+              <kbd>*Fix*</kbd> matches <samp>Fix-It</samp>,
+              <samp>Fix-It of Sorts</samp>, and <samp>Time Travel Fix-It</samp>.
+              Works in every field except <strong>Author</strong>,
+              <strong>Work ID</strong>, and <strong>Language</strong>, which
+              need exact values.
+            </dd>
+          </dl>
+
+          <h4>Conditional Blocking</h4>
+          <p>
+            Block a tag depending on whether other tags are present, with the
+            condition inside <kbd>{ }</kbd>. Works in the tag fields (blacklist,
+            strict blacklist, whitelist, and highlight) and the primary
+            relationship/character fields. <strong>Not</strong> available in the
+            title, summary, or author fields.
+          </p>
+          <dl>
+            <dt>with:{ }: block only if the condition tag is also present</dt>
+            <dd>
+              <kbd>Major Character Death with:{Unhappy Ending}</kbd> blocks
+              <samp>Major Character Death</samp> only when
+              <samp>Unhappy Ending</samp> is also tagged.
+            </dd>
+
+            <dt>unless:{ }: block unless the condition tag is present</dt>
+            <dd>
+              <kbd>F/M unless:{Multi}</kbd> blocks <samp>F/M</samp> works that
+              aren't also tagged <samp>Multi</samp>.
+            </dd>
+
+            <dt>,: AND inside the braces (every condition must match)</dt>
+            <dd>
+              <kbd>Explicit with:{Dead Dove: Do Not Eat, Dubious Consent}</kbd>
+              blocks <samp>Explicit</samp> works only when they also have both
+              <samp>Dead Dove: Do Not Eat</samp> and
+              <samp>Dubious Consent</samp>.
+            </dd>
+
+            <dt>||: OR inside the braces (any condition may match)</dt>
+            <dd>
+              <kbd>F/M unless:{Multi||M/M||F/F}</kbd> blocks
+              <samp>F/M</samp> works that aren't also tagged <samp>Multi</samp>,
+              <samp>M/M</samp>, or <samp>F/F</samp>.
+            </dd>
+          </dl>
+
+          <h4>Primary Relationships &amp; Characters</h4>
+          <p>
+            These fields keep a work only when one of your pairings or
+            characters appears within the Tag Window&mdash;the first few tags
+            (default: 1 for relationships, 5 for characters). Enter names
+            exactly as they appear on AO3. Here the conditional can only check
+            fandoms: use <kbd>with:{Fandom}</kbd> to limit a rule to one fandom,
+            or <kbd>with:{Fandom1||Fandom2}</kbd> to cover several.
+          </p>
+          <dl>
+            <dt><kbd>*/Harry Potter*</kbd></dt>
+            <dd>
+              allows <samp>Harry Potter</samp> in any romantic (<samp>/</samp>)
+              pairing.
+            </dd>
+
+            <dt><kbd>*Harry Potter*</kbd></dt>
+            <dd>
+              allows <strong>all</strong> tags with Harry Potter, including
+              platonic ones like <samp>Harry Potter &amp; Sirius Black</samp>.
+            </dd>
+
+            <dt>
+              <kbd
+                >Harry Potter/Tom Riddle with:{Harry Potter - J. K.
+                Rowling}</kbd
+              >
+            </dt>
+            <dd>
+              requires this ship, but only blocks works in the
+              <samp>Harry Potter - J. K. Rowling</samp> fandom that lack it.
+            </dd>
+          </dl>`,
+        footerTitle: `Advanced Blocker v${VERSION}`,
+        closeText: "Close",
+      });
+    }
+
     const dialog = window.AO3MenuHelpers.createDialog(
       "🛡️ Advanced Blocker 🛡️",
-      { maxWidth: "800px" },
+      {
+        maxWidth: "800px",
+        actions: [
+          {
+            icon: window.AO3MenuHelpers.getHelpIconSVG(),
+            title: "About Advanced Blocker",
+            onClick: showInfoModal,
+          },
+        ],
+      },
     );
 
     const tagSection = window.AO3MenuHelpers.createSection("📖 Tag Filtering");
 
     const tagBlacklistContainer = document.createElement("div");
     tagBlacklistContainer.id = "tag-blacklist-container";
+    tagBlacklistContainer.style.marginBottom = "15px";
 
     let persistentStrictBlacklistValue = config._rawStrictTagBlacklist || "";
 
     function renderTagBlacklistUI(strictEnabled) {
       tagBlacklistContainer.innerHTML = "";
 
-      let blacklisted = [];
-      if (config._rawTagBlacklist) {
-        blacklisted.push(config._rawTagBlacklist);
-      }
-      if (config._rawConditionalTagBlacklist) {
-        blacklisted.push(
-          ...config.conditionalTagBlacklist.map((filter) => filter.display),
-        );
-      }
-
       if (strictEnabled) {
         const regularBlacklist = createInputWithEyeToggle(
           window.AO3MenuHelpers.createTextarea({
             id: "tag-blacklist-input",
             label: "Blacklist Tags",
-            value: blacklisted.join(", "),
-            placeholder: "Explicit, Major Character Death, F/M unless:{Multi}",
+            value: getFullTagBlacklistValue(config),
+            placeholder:
+              "Explicit, Angst unless:{Happy Ending, Fluff}, Major Character Death",
             tooltip:
               "Show a placeholder for blocked works. Use eye toggle to hide completely. * for wildcards. Conditionals supported.",
           }),
@@ -1591,8 +1925,9 @@
           window.AO3MenuHelpers.createTextarea({
             id: "tag-blacklist-input",
             label: "Blacklist Tags",
-            value: blacklisted.join(", "),
-            placeholder: "Explicit, Major Character Death, F/M unless:{Multi}",
+            value: getFullTagBlacklistValue(config),
+            placeholder:
+              "Explicit, Angst unless:{Happy Ending, Fluff}, Major Character Death",
             tooltip:
               "Show a placeholder for blocked works. Use eye toggle to hide completely. * for wildcards. Conditionals supported.",
           }),
@@ -1611,7 +1946,7 @@
       value: config._rawTagWhitelist,
       placeholder:
         "*Happy Ending*, Fluff, Slow Burn* unless:{Enemies to Lovers}",
-      description:
+      tooltip:
         "Always shows the work even if it matches the blacklist. * for wildcards. Conditionals supported.",
     });
     tagSection.appendChild(tagWhitelist);
@@ -1619,7 +1954,8 @@
       id: "tag-highlights-input",
       label: "Highlight Tags",
       value: config._rawTagHighlights,
-      placeholder: "*Fix-It*, Enemies to Lovers, Angst with:{Happy Ending}",
+      placeholder:
+        "*Fix-It*, Enemies to Lovers, Angst with:{Happy Ending, Fluff}",
       tooltip:
         "Make these works stand out. * for wildcards. Conditionals supported.",
     });
@@ -1631,9 +1967,8 @@
     });
     const boldTagsCheckbox = window.AO3MenuHelpers.createCheckbox({
       id: "bold-highlighted-tags-checkbox",
-      label: "Bold Highlighted Tags",
+      label: "Bold highlighted tags",
       checked: config.boldHighlightedTags,
-      tooltip: "Make tags bold in highlighted works for extra visibility.",
       inGroup: false,
     });
     const boldTagsGroup =
@@ -1685,7 +2020,6 @@
       value: config._rawPrimaryRelpad || 1,
       min: 1,
       max: 10,
-      tooltip: "Check only the first X relationship tags.",
     });
     const charPad = window.AO3MenuHelpers.createNumberInput({
       id: "primary-charpad-input",
@@ -1693,7 +2027,6 @@
       value: config._rawPrimaryCharpad || 5,
       min: 1,
       max: 10,
-      tooltip: "Check only the first X character tags.",
     });
     const pairingRow = window.AO3MenuHelpers.createTwoColumnLayout(
       relPad,
@@ -1710,7 +2043,6 @@
         label: "Allowed Languages",
         value: config._rawAllowedLanguages || "",
         placeholder: "English, Русский, 中文-普通话国语",
-        tooltip: "Only show these languages. Leave empty for all.",
       }),
       "language",
       config,
@@ -1722,7 +2054,6 @@
         label: "Max Fandoms",
         value: config._rawMaxCrossovers || "",
         min: 1,
-        tooltip: "Hide works with more than this many fandoms.",
       }),
       "maxCrossovers",
       config,
@@ -1751,7 +2082,6 @@
         label: "Min Words",
         value: config._rawMinWords || "",
         placeholder: "1000",
-        tooltip: "Hide works under this many words.",
       }),
       "minWords",
       config,
@@ -1762,7 +2092,6 @@
         label: "Max Words",
         value: config._rawMaxWords || "",
         placeholder: "100000",
-        tooltip: "Hide works over this many words.",
       }),
       "maxWords",
       config,
@@ -1779,7 +2108,6 @@
         value: config._rawMinChapters || "",
         min: 1,
         placeholder: "2",
-        tooltip: "Hide works with fewer chapters. Set to 2 to skip oneshots.",
       }),
       "minChapters",
       config,
@@ -1791,8 +2119,6 @@
         value: config._rawMaxChapters || "",
         min: 1,
         placeholder: "200",
-        tooltip:
-          "Hide works with more chapters. Useful for avoiding epic-length works or drabble collections.",
       }),
       "maxChapters",
       config,
@@ -1804,16 +2130,14 @@
     workSection.appendChild(row3);
     const blockOngoing = window.AO3MenuHelpers.createCheckbox({
       id: "block-ongoing-checkbox",
-      label: "Block Ongoing Works",
+      label: "Block ongoing works",
       checked: config.blockOngoing,
-      tooltip: "Hide works that are ongoing.",
       inGroup: false,
     });
     const blockComplete = window.AO3MenuHelpers.createCheckbox({
       id: "block-complete-checkbox",
-      label: "Block Complete Works",
+      label: "Block complete works",
       checked: config.blockComplete,
-      tooltip: "Hide works that are marked as complete.",
       inGroup: false,
     });
     const blockOngoingGroup = createInputWithEyeToggle(
@@ -1842,7 +2166,6 @@
         label: "Blacklist Titles",
         value: config._rawTitleBlacklist,
         placeholder: "oneshot, prompt, 2025",
-        tooltip: "Blocks if the title contains your text.",
       }),
       "titleBlacklist",
       config,
@@ -1864,7 +2187,6 @@
         label: "Blacklist Summary",
         value: config._rawSummaryBlacklist,
         placeholder: "oneshot, prompt, 2025",
-        tooltip: "Blocks if the summary has these words/phrases.",
       }),
       "summaryBlacklist",
       config,
@@ -1894,20 +2216,17 @@
     authorSection.appendChild(authorRow2);
     dialog.appendChild(authorSection);
 
-    const displaySection =
-      window.AO3MenuHelpers.createSection("⚙️ Display Options");
+    const displaySection = window.AO3MenuHelpers.createSection("⚙️ Options");
     const showReasonsCheckbox = window.AO3MenuHelpers.createCheckbox({
       id: "show-reasons-checkbox",
-      label: "Show Block Reason",
+      label: "Show block reason",
       checked: config.showReasons,
-      tooltip:
-        "Show detailed reasons in placeholders, or just show 'Hidden by filters'.",
       inGroup: false,
     });
     const showPlaceholdersCheckbox =
       window.AO3MenuHelpers.createConditionalCheckbox({
         id: "show-placeholders-checkbox",
-        label: "Show Placeholders",
+        label: "Show placeholders",
         checked: config.showPlaceholders,
         tooltip:
           "When ON: show placeholders for blocked works (use eye icons below to hide specific filters completely). When OFF: hide ALL blocked works completely.",
@@ -1915,14 +2234,13 @@
       });
     const enableHighlighting = window.AO3MenuHelpers.createCheckbox({
       id: "enable-highlighting-on-my-content-checkbox",
-      label: "Enable Highlighting",
+      label: "Enable highlighting",
       checked: config.enableHighlightingOnMyContent,
-      tooltip: "Re-enable tag highlighting on your own pages.",
       inGroup: false,
     });
     const disableOnMyContent = window.AO3MenuHelpers.createConditionalCheckbox({
       id: "disable-on-my-content-checkbox",
-      label: "Disable on My Content",
+      label: "Disable on my content",
       checked: config.disableOnMyContent,
       tooltip:
         "Don't block or highlight works on your dashboard, bookmarks, history, and works pages. Automatically includes all your pseuds.",
@@ -1946,17 +2264,12 @@
     const disableCollapseTransitionsCheckbox =
       window.AO3MenuHelpers.createCheckbox({
         id: "disable-collapse-transitions-checkbox",
-        label: "Disable Collapse Transitions",
+        label: "Disable collapse transitions",
         checked: config.disableCollapseTransitions,
-        tooltip:
-          "Disable smooth transitions when collapsing/expanding blocked works.",
       });
-    disableCollapseTransitionsCheckbox.querySelector("label").htmlFor =
-      "disable-collapse-transitions-checkbox";
-
     const strictTagBlockingCheckbox = window.AO3MenuHelpers.createCheckbox({
       id: "enable-strict-tag-blocking-checkbox",
-      label: "Enable Strict Tag Blocking",
+      label: "Enable strict tag blocking",
       checked: config.enableStrictTagBlocking,
       tooltip: `Split tag blacklist into two lists: 'Blacklist Tags' (shows placeholder) and 'Strict Blacklist Tags' (hides completely). Useful for separating mild dislikes from absolute deal-breakers. Quick-add: ${
         config.quickAddKey || "Alt"
@@ -1982,12 +2295,10 @@
     });
 
     const displayRow3 = document.createElement("div");
-    displayRow3.className = "ao3mh-row";
     displayRow3.appendChild(hideMenuCheckbox);
     displaySection.appendChild(displayRow3);
 
     const displayRow4 = document.createElement("div");
-    displayRow4.className = "ao3mh-row";
     displayRow4.appendChild(quickAddKeyInput);
     displaySection.appendChild(displayRow4);
 
@@ -2001,12 +2312,12 @@
     eyeToggleTipSpan.textContent =
       'Works hidden this way won\'t show placeholders even when "Show Placeholders" is enabled.';
     eyeToggleTipContent.appendChild(eyeToggleTipSpan);
-    const eyeToggleTipBox = window.AO3MenuHelpers.createInfoBox(
-      eyeToggleTipContent,
-      { icon: "👁️" },
+    dialog.appendChild(
+      window.AO3MenuHelpers.createTipBox(eyeToggleTipContent, {
+        icon: "👁️",
+        id: "eye-toggle-info",
+      }),
     );
-    eyeToggleTipBox.id = "eye-toggle-info";
-    dialog.appendChild(eyeToggleTipBox);
 
     const tipContent = document.createElement("span");
     tipContent.innerHTML = "<strong> Quick-Add:</strong> Press ";
@@ -2029,10 +2340,9 @@
         ),
       );
     }
-    const tipBox = window.AO3MenuHelpers.createInfoBox(tipContent, {
-      icon: "➕",
-    });
-    dialog.appendChild(tipBox);
+    dialog.appendChild(
+      window.AO3MenuHelpers.createTipBox(tipContent, { icon: "➕" }),
+    );
 
     const buttons = window.AO3MenuHelpers.createButtonGroup([
       { text: "Save", id: "blocker-save" },
@@ -2040,12 +2350,9 @@
     ]);
     dialog.appendChild(buttons);
 
-    const resetLink = window.AO3MenuHelpers.createResetLink(
-      "Reset to Default Settings",
-      () => {
-        if (
-          confirm("Are you sure you want to reset all settings to default?")
-        ) {
+    dialog.appendChild(
+      window.AO3MenuHelpers.createImportExportRow({
+        onReset: () => {
           const config = loadConfig();
           const username = config.username || null;
           const newDefaults = { ...DEFAULTS, username };
@@ -2053,219 +2360,185 @@
             alert("Settings reset! Reloading...");
             location.reload();
           }
-        }
-      },
-    );
-    dialog.appendChild(resetLink);
-
-    const exportBtn = document.createElement("button");
-    exportBtn.id = "ao3-export";
-    exportBtn.textContent = "Export Settings";
-    exportBtn.style.marginRight = "8px";
-    const fileInput = window.AO3MenuHelpers.createFileInput({
-      id: "ao3-import",
-      buttonText: "Import Settings",
-      accept: "application/json",
-      onChange: (file) => {
-        const reader = new FileReader();
-        reader.onload = function (evt) {
-          try {
-            const importedConfig = JSON.parse(evt.target.result);
-            if (typeof importedConfig !== "object" || !importedConfig)
-              throw new Error("Invalid JSON");
-            const validConfig = { ...DEFAULTS };
-            Object.keys(validConfig).forEach((key) => {
-              if (importedConfig.hasOwnProperty(key))
-                validConfig[key] = importedConfig[key];
-            });
-            if (saveConfig(validConfig)) {
-              alert("Settings imported! Reloading...");
-              location.reload();
-            } else {
-              throw new Error("Failed to save imported settings");
+        },
+        exportData: () => loadConfig(),
+        exportPrefix: "ao3_advanced_blocker_config",
+        onImport: (file) => {
+          const reader = new FileReader();
+          reader.onerror = () =>
+            alert("Failed to read file. It may be corrupted or inaccessible.");
+          reader.onload = function (evt) {
+            try {
+              const importedConfig = JSON.parse(evt.target.result);
+              if (typeof importedConfig !== "object" || !importedConfig)
+                throw new Error("Invalid JSON");
+              const validConfig = { ...DEFAULTS };
+              Object.keys(validConfig).forEach((key) => {
+                if (importedConfig.hasOwnProperty(key))
+                  validConfig[key] = importedConfig[key];
+              });
+              if (saveConfig(validConfig)) {
+                alert("Settings imported! Reloading...");
+                location.reload();
+              } else {
+                throw new Error("Failed to save imported settings");
+              }
+            } catch (err) {
+              alert(
+                "Import failed: " + (err && err.message ? err.message : err),
+              );
             }
-          } catch (err) {
-            alert("Import failed: " + (err && err.message ? err.message : err));
-          }
-        };
-        reader.readAsText(file);
-      },
-    });
-    const importExportContainer = document.createElement("div");
-    importExportContainer.className = "reset-link";
-    importExportContainer.style.marginTop = "18px";
-    importExportContainer.appendChild(exportBtn);
-    importExportContainer.appendChild(fileInput.button);
-    importExportContainer.appendChild(fileInput.input);
-    dialog.appendChild(importExportContainer);
+          };
+          reader.readAsText(file);
+        },
+      }),
+    );
 
-    exportBtn.addEventListener("click", function () {
-      try {
-        const config = loadConfig();
-        const now = new Date();
-        const pad = (n) => n.toString().padStart(2, "0");
-        const yyyy = now.getFullYear();
-        const mm = pad(now.getMonth() + 1);
-        const dd = pad(now.getDate());
-        const dateStr = `${yyyy}-${mm}-${dd}`;
-        const filename = `ao3_advanced_blocker_config_${dateStr}.json`;
-        const blob = new Blob([JSON.stringify(config, null, 2)], {
-          type: "application/json",
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }, 100);
-      } catch (e) {
-        alert("Export failed: " + (e && e.message ? e.message : e));
-      }
-    });
+    const saveBtn = dialog.querySelector("#blocker-save");
+    if (saveBtn)
+      saveBtn.addEventListener("click", () => {
+        // Parse tag blacklist input to separate regular and conditional entries
+        const rawInput =
+          window.AO3MenuHelpers.getValue("tag-blacklist-input") || "";
+        const rawList = splitEntries(rawInput);
+        const regular = [];
+        const conditionals = [];
+        rawList.forEach((entry) => {
+          // Check for conditional syntax: "Tag unless:{OtherTag}" or "Tag with:{OtherTag}"
+          const conditionalMatch = entry.match(
+            /^(.+?)\s*(unless|with)\s*:\s*\{(.+)\}$/i,
+          );
 
-    dialog.querySelector("#blocker-save").addEventListener("click", () => {
-      // Parse tag blacklist input to separate regular and conditional entries
-      const rawInput =
-        window.AO3MenuHelpers.getValue("tag-blacklist-input") || "";
-      const rawList = rawInput
-        .split(/,(?:\s)?/g)
-        .map((i) => i.trim())
-        .filter(Boolean);
-      const regular = [];
-      const conditionals = [];
-      rawList.forEach((entry) => {
-        // Check for conditional syntax: "Tag unless:{OtherTag}" or "Tag with:{OtherTag}"
-        const conditionalMatch = entry.match(
-          /^(.+?)\s*(unless|with)\s*:\s*\{(.+)\}$/i,
-        );
+          if (conditionalMatch) {
+            const block = conditionalMatch[1].trim();
+            const operator = conditionalMatch[2].toLowerCase();
+            const condition = conditionalMatch[3].trim();
 
-        if (conditionalMatch) {
-          const block = conditionalMatch[1].trim();
-          const operator = conditionalMatch[2].toLowerCase();
-          const condition = conditionalMatch[3].trim();
-
-          if (block && condition) {
-            conditionals.push({
-              block: block,
-              operator: operator,
-              condition: condition,
-              display: entry.trim(),
-            });
+            if (block && condition) {
+              conditionals.push({
+                block: block,
+                operator: operator,
+                condition: condition,
+                display: entry.trim(),
+              });
+            } else {
+              regular.push(entry);
+            }
           } else {
             regular.push(entry);
           }
+        });
+
+        const updatedConfig = {
+          tagBlacklist: regular.join(", "),
+          conditionalTagBlacklist: conditionals,
+          tagWhitelist:
+            window.AO3MenuHelpers.getValue("tag-whitelist-input") || "",
+          tagHighlights:
+            window.AO3MenuHelpers.getValue("tag-highlights-input") || "",
+          authorBlacklist:
+            window.AO3MenuHelpers.getValue("author-blacklist-input") || "",
+          titleBlacklist:
+            window.AO3MenuHelpers.getValue("title-blacklist-input") || "",
+          summaryBlacklist:
+            window.AO3MenuHelpers.getValue("summary-blacklist-input") || "",
+          workBlacklist:
+            window.AO3MenuHelpers.getValue("work-blacklist-input") || "",
+          showReasons: window.AO3MenuHelpers.getValue("show-reasons-checkbox"),
+          showPlaceholders: window.AO3MenuHelpers.getValue(
+            "show-placeholders-checkbox",
+          ),
+          highlightColor:
+            window.AO3MenuHelpers.getValue("highlight-color-input") ||
+            DEFAULTS.highlightColor,
+          boldHighlightedTags: window.AO3MenuHelpers.getValue(
+            "bold-highlighted-tags-checkbox",
+          ),
+          allowedLanguages:
+            window.AO3MenuHelpers.getValue("allowed-languages-input") || "",
+          maxCrossovers:
+            window.AO3MenuHelpers.getValue("max-crossovers-input") || "",
+          minWords: window.AO3MenuHelpers.getValue("min-words-input") || "",
+          maxWords: window.AO3MenuHelpers.getValue("max-words-input") || "",
+          minChapters:
+            window.AO3MenuHelpers.getValue("min-chapters-input") || "",
+          maxChapters:
+            window.AO3MenuHelpers.getValue("max-chapters-input") || "",
+          maxMonthsSinceUpdate:
+            window.AO3MenuHelpers.getValue("max-months-since-update-input") ||
+            "",
+          blockComplete: window.AO3MenuHelpers.getValue(
+            "block-complete-checkbox",
+          ),
+          blockOngoing: window.AO3MenuHelpers.getValue(
+            "block-ongoing-checkbox",
+          ),
+          disableOnMyContent: window.AO3MenuHelpers.getValue(
+            "disable-on-my-content-checkbox",
+          ),
+          enableHighlightingOnMyContent: window.AO3MenuHelpers.getValue(
+            "enable-highlighting-on-my-content-checkbox",
+          ),
+          hideMenu: window.AO3MenuHelpers.getValue("hide-menu-checkbox"),
+          username: config.username || null,
+          primaryRelationships:
+            window.AO3MenuHelpers.getValue("primary-relationships-input") || "",
+          primaryCharacters:
+            window.AO3MenuHelpers.getValue("primary-characters-input") || "",
+          primaryRelpad:
+            window.AO3MenuHelpers.getValue("primary-relpad-input") ||
+            DEFAULTS.primaryRelpad,
+          primaryCharpad:
+            window.AO3MenuHelpers.getValue("primary-charpad-input") ||
+            DEFAULTS.primaryCharpad,
+          quickAddKey:
+            window.AO3MenuHelpers.getValue("quick-add-key-input") ||
+            DEFAULTS.quickAddKey,
+          enableStrictTagBlocking: window.AO3MenuHelpers.getValue(
+            "enable-strict-tag-blocking-checkbox",
+          ),
+          disableCollapseTransitions: (() => {
+            const el = document.getElementById(
+              "disable-collapse-transitions-checkbox",
+            );
+            return el?.checked ?? el?.querySelector("input")?.checked ?? false;
+          })(),
+          strictTagBlacklist: (() => {
+            const currentDomValue = window.AO3MenuHelpers.getValue(
+              "strict-tag-blacklist-input",
+            );
+            if (currentDomValue !== null && currentDomValue !== undefined) {
+              persistentStrictBlacklistValue = currentDomValue;
+            }
+            return persistentStrictBlacklistValue;
+          })(),
+          hideCompletelyRules: (() => {
+            const rules = {};
+            document
+              .querySelectorAll(".ao3-blocker-eye-toggle")
+              .forEach((toggle) => {
+                const filterId = toggle.getAttribute("data-filter-id");
+                const pressed = toggle.getAttribute("aria-pressed") === "true";
+                rules[filterId] = pressed;
+              });
+            return rules;
+          })(),
+          _version: VERSION,
+        };
+        if (saveConfig(updatedConfig)) {
+          location.href =
+            location.href + (location.search ? "&" : "?") + "t=" + Date.now();
         } else {
-          regular.push(entry);
+          alert("Error saving settings.");
         }
+        dialog.remove();
       });
 
-      const updatedConfig = {
-        tagBlacklist: regular.join(", "),
-        conditionalTagBlacklist: conditionals,
-        tagWhitelist:
-          window.AO3MenuHelpers.getValue("tag-whitelist-input") || "",
-        tagHighlights:
-          window.AO3MenuHelpers.getValue("tag-highlights-input") || "",
-        authorBlacklist:
-          window.AO3MenuHelpers.getValue("author-blacklist-input") || "",
-        titleBlacklist:
-          window.AO3MenuHelpers.getValue("title-blacklist-input") || "",
-        summaryBlacklist:
-          window.AO3MenuHelpers.getValue("summary-blacklist-input") || "",
-        workBlacklist:
-          window.AO3MenuHelpers.getValue("work-blacklist-input") || "",
-        showReasons: window.AO3MenuHelpers.getValue("show-reasons-checkbox"),
-        showPlaceholders: window.AO3MenuHelpers.getValue(
-          "show-placeholders-checkbox",
-        ),
-        highlightColor:
-          window.AO3MenuHelpers.getValue("highlight-color-input") ||
-          DEFAULTS.highlightColor,
-        boldHighlightedTags: window.AO3MenuHelpers.getValue(
-          "bold-highlighted-tags-checkbox",
-        ),
-        allowedLanguages:
-          window.AO3MenuHelpers.getValue("allowed-languages-input") || "",
-        maxCrossovers:
-          window.AO3MenuHelpers.getValue("max-crossovers-input") || "",
-        minWords: window.AO3MenuHelpers.getValue("min-words-input") || "",
-        maxWords: window.AO3MenuHelpers.getValue("max-words-input") || "",
-        minChapters: window.AO3MenuHelpers.getValue("min-chapters-input") || "",
-        maxChapters: window.AO3MenuHelpers.getValue("max-chapters-input") || "",
-        maxMonthsSinceUpdate:
-          window.AO3MenuHelpers.getValue("max-months-since-update-input") || "",
-        blockComplete: window.AO3MenuHelpers.getValue(
-          "block-complete-checkbox",
-        ),
-        blockOngoing: window.AO3MenuHelpers.getValue("block-ongoing-checkbox"),
-        disableOnMyContent: window.AO3MenuHelpers.getValue(
-          "disable-on-my-content-checkbox",
-        ),
-        enableHighlightingOnMyContent: window.AO3MenuHelpers.getValue(
-          "enable-highlighting-on-my-content-checkbox",
-        ),
-        hideMenu: window.AO3MenuHelpers.getValue("hide-menu-checkbox"),
-        username: config.username || null,
-        primaryRelationships:
-          window.AO3MenuHelpers.getValue("primary-relationships-input") || "",
-        primaryCharacters:
-          window.AO3MenuHelpers.getValue("primary-characters-input") || "",
-        primaryRelpad:
-          window.AO3MenuHelpers.getValue("primary-relpad-input") ||
-          DEFAULTS.primaryRelpad,
-        primaryCharpad:
-          window.AO3MenuHelpers.getValue("primary-charpad-input") ||
-          DEFAULTS.primaryCharpad,
-        quickAddKey:
-          window.AO3MenuHelpers.getValue("quick-add-key-input") ||
-          DEFAULTS.quickAddKey,
-        enableStrictTagBlocking: window.AO3MenuHelpers.getValue(
-          "enable-strict-tag-blocking-checkbox",
-        ),
-        disableCollapseTransitions: (() => {
-          const el = document.getElementById(
-            "disable-collapse-transitions-checkbox",
-          );
-          return el?.checked ?? el?.querySelector("input")?.checked ?? false;
-        })(),
-        strictTagBlacklist: (() => {
-          const currentDomValue = window.AO3MenuHelpers.getValue(
-            "strict-tag-blacklist-input",
-          );
-          if (currentDomValue !== null && currentDomValue !== undefined) {
-            persistentStrictBlacklistValue = currentDomValue;
-          }
-          return persistentStrictBlacklistValue;
-        })(),
-        hideCompletelyRules: (() => {
-          const rules = {};
-          document
-            .querySelectorAll(".ao3-blocker-eye-toggle")
-            .forEach((toggle) => {
-              const filterId = toggle.getAttribute("data-filter-id");
-              const pressed = toggle.getAttribute("aria-pressed") === "true";
-              rules[filterId] = pressed;
-            });
-          return rules;
-        })(),
-        _version: VERSION,
-      };
-      if (saveConfig(updatedConfig)) {
-        location.href =
-          location.href + (location.search ? "&" : "?") + "t=" + Date.now();
-      } else {
-        alert("Error saving settings.");
-      }
-      dialog.remove();
-    });
-
-    dialog.querySelector("#blocker-cancel").addEventListener("click", () => {
-      dialog.remove();
-    });
+    const cancelBtn = dialog.querySelector("#blocker-cancel");
+    if (cancelBtn)
+      cancelBtn.addEventListener("click", () => {
+        dialog.remove();
+      });
     document.body.appendChild(dialog);
 
     // Function to toggle eye icon visibility
@@ -2320,6 +2593,14 @@
     }
   }
 
+  // ── Block placeholder UI ──────────────────────────────
+
+  /**
+   * Extracts and parses the word count from a dd.words element.
+   * Strips thousand-separator commas/spaces before parsing.
+   * @param {Object} ddElements
+   * @returns {number|null}
+   */
   function getWordCount(ddElements) {
     const wordsElement = ddElements.words;
     if (!wordsElement) return null;
@@ -2330,21 +2611,32 @@
     return Number.isFinite(n) ? n : null;
   }
 
+  /**
+   * Moves non-fold, non-cut children of a work element into a cut container.
+   * The cut div uses CSS max-height transition for collapse/expand animation.
+   * @param {HTMLElement} workElement
+   * @returns {HTMLElement} the cut container div
+   */
   function getCut(workElement) {
     const cut = document.createElement("div");
     cut.className = `${CSS_NAMESPACE}-cut`;
     const children = Array.from(workElement.children);
-    children.forEach((child) => {
-      if (
+    const moved = children.filter(
+      (child) =>
         !child.classList.contains(`${CSS_NAMESPACE}-fold`) &&
-        !child.classList.contains(`${CSS_NAMESPACE}-cut`)
-      ) {
-        cut.appendChild(child);
-      }
-    });
+        !child.classList.contains(`${CSS_NAMESPACE}-cut`),
+    );
+    cut.append(...moved);
     return cut;
   }
 
+  /**
+   * Creates the fold bar shown above a blocked work. Contains a note with
+   * block reasons (categorized into tags, authors, ratings, etc.) and an
+   * eye icon toggle button.
+   * @param {Array} reasons - from getBlockReason
+   * @returns {HTMLElement} the fold container div
+   */
   function getFold(reasons) {
     const fold = document.createElement("div");
     fold.className = `${CSS_NAMESPACE}-fold`;
@@ -2432,20 +2724,35 @@
           parts.push(`<em>${reason.primaryPairing}</em>`);
       });
       message = parts.join("; ");
-      iconHtml = `<span class="${CSS_NAMESPACE}-icon" style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.3em;background-color:currentColor;mask:url('${ICON_HIDE}') no-repeat center/contain;-webkit-mask:url('${ICON_HIDE}') no-repeat center/contain;"></span>`;
+      iconHtml = html`<span
+        class="${CSS_NAMESPACE}-icon"
+        style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.3em;background-color:currentColor;mask:url('${ICON_HIDE}') no-repeat center/contain;-webkit-mask:url('${ICON_HIDE}') no-repeat center/contain;"
+      ></span>`;
     } else if (reasons && reasons.length > 0) {
       message = "<em>Hidden by filters.</em>";
-      iconHtml = `<span class="${CSS_NAMESPACE}-icon" style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.3em;background-color:currentColor;mask:url('${ICON_HIDE}') no-repeat center/contain;-webkit-mask:url('${ICON_HIDE}') no-repeat center/contain;"></span>`;
+      iconHtml = html`<span
+        class="${CSS_NAMESPACE}-icon"
+        style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.3em;background-color:currentColor;mask:url('${ICON_HIDE}') no-repeat center/contain;-webkit-mask:url('${ICON_HIDE}') no-repeat center/contain;"
+      ></span>`;
     }
-    note.innerHTML = `${iconHtml}${message}`;
+    note.innerHTML = html`${iconHtml}${message}`;
     fold.appendChild(note);
     fold.appendChild(getToggleButton());
     return fold;
   }
 
+  /**
+   * Creates the Show/Hide toggle button used in the fold bar.
+   * Handles CSS transition-based expand/collapse and icon swapping.
+   * @returns {HTMLButtonElement}
+   */
   function getToggleButton() {
-    const showIcon = `<span style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.2em;background-color:currentColor;mask:url('${ICON_EYE}') no-repeat center/contain;-webkit-mask:url('${ICON_EYE}') no-repeat center/contain;"></span>`;
-    const hideIcon = `<span style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.2em;background-color:currentColor;mask:url('${ICON_HIDE}') no-repeat center/contain;-webkit-mask:url('${ICON_HIDE}') no-repeat center/contain;"></span>`;
+    const showIcon = html`<span
+      style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.2em;background-color:currentColor;mask:url('${ICON_EYE}') no-repeat center/contain;-webkit-mask:url('${ICON_EYE}') no-repeat center/contain;"
+    ></span>`;
+    const hideIcon = html`<span
+      style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.2em;background-color:currentColor;mask:url('${ICON_HIDE}') no-repeat center/contain;-webkit-mask:url('${ICON_HIDE}') no-repeat center/contain;"
+    ></span>`;
     const button = document.createElement("button");
     button.className = `${CSS_NAMESPACE}-toggle`;
     button.innerHTML = showIcon + "Show";
@@ -2468,29 +2775,45 @@
       );
       message = message.replace(iconRegex, "");
       if (cut) {
-        const targetHeight = cut.scrollHeight;
+        const collapseHeight = cut.scrollHeight;
         cut.style.setProperty(
           "--ao3-blocker-cut-height",
-          `${Math.max(targetHeight, 0)}px`,
+          `${Math.max(collapseHeight, 0)}px`,
         );
       }
       if (work.classList.contains(unhideClassFragment)) {
         work.classList.remove(unhideClassFragment);
-        if (cut) cut.style.overflow = "hidden";
-        note.innerHTML = `<span class="${CSS_NAMESPACE}-icon" style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.3em;background-color:currentColor;mask:url('${ICON_HIDE}') no-repeat center/contain;-webkit-mask:url('${ICON_HIDE}') no-repeat center/contain;"></span>${message}`;
+        if (cut) {
+          cut.style.overflow = "hidden";
+          cut.style.removeProperty("max-height");
+          const reflowHeight = cut.scrollHeight;
+          cut.style.setProperty(
+            "--ao3-blocker-cut-height",
+            `${Math.max(reflowHeight, 0)}px`,
+          );
+        }
+        note.innerHTML = html`<span
+            class="${CSS_NAMESPACE}-icon"
+            style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.3em;background-color:currentColor;mask:url('${ICON_HIDE}') no-repeat center/contain;-webkit-mask:url('${ICON_HIDE}') no-repeat center/contain;"
+          ></span
+          >${message}`;
         buttonEl.innerHTML = showIcon + "Show";
         buttonEl.setAttribute("aria-expanded", "false");
       } else {
         work.classList.add(unhideClassFragment);
         if (cut) {
-          cut.style.overflow = "hidden";
+          cut.style.overflow = "visible";
           setTimeout(() => {
             if (work.classList.contains(unhideClassFragment)) {
-              cut.style.overflow = "visible";
+              cut.style.maxHeight = "none";
             }
           }, 260);
         }
-        note.innerHTML = `<span class="${CSS_NAMESPACE}-icon" style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.3em;background-color:currentColor;mask:url('${ICON_EYE}') no-repeat center/contain;-webkit-mask:url('${ICON_EYE}') no-repeat center/contain;"></span>${message}`;
+        note.innerHTML = html`<span
+            class="${CSS_NAMESPACE}-icon"
+            style="display:inline-block;width:1.2em;height:1.2em;vertical-align:-0.15em;margin-right:0.3em;background-color:currentColor;mask:url('${ICON_EYE}') no-repeat center/contain;-webkit-mask:url('${ICON_EYE}') no-repeat center/contain;"
+          ></span
+          >${message}`;
         buttonEl.innerHTML = hideIcon + "Hide";
         buttonEl.setAttribute("aria-expanded", "true");
       }
@@ -2498,10 +2821,19 @@
     return button;
   }
 
+  /**
+   * Applies blocking to a work element. Hides completely, or shows a collapsible
+   * placeholder with block reasons.
+   * @param {HTMLElement} workElement
+   * @param {Array} reasons - from getBlockReason
+   * @param {Object} config
+   */
   function blockWork(workElement, reasons, config) {
     if (!reasons) return;
 
     // Check if any reason has the _forceHide flag (strict tags)
+    // _filterType identifies which filter triggered the block (used by eye-toggle and fold UI)
+    // _forceHide always hides completely, bypassing showPlaceholders (used for strict tags)
     const forceHide = reasons.some((reason) => reason._forceHide);
 
     // Master override: if Show Placeholders is off OR strict tag match, hide everything
@@ -2532,6 +2864,32 @@
     }
   }
 
+  // ── Block evaluation ──────────────────────────────────
+
+  /**
+   * Create a regex pattern for a character
+   * @param {string} text
+   * @returns A pattern object accepted by matchPattern
+   */
+  function makeCharacterPattern(text) {
+    const pattern = new ReqExp(String.raw`.*\b${item}\b.*`, "i");
+
+    return {
+      hasWildcard: true,
+      regex: pattern,
+      exactRegex: pattern,
+    };
+  }
+
+  function matchRelationshipPattern(text, pattern, exactMatch) {
+    const normalizedText = normalizeText(text);
+    return relationshipPowerSet(pattern).some((rel) => rel.test(normalizeText));
+  }
+
+  /**
+   * Matches text against a pattern (string or compiled pattern object).
+   * Supports exact match, substring match, and wildcard regex matching.
+   */
   function matchPattern(text, pattern, exactMatch) {
     const normalizedText = normalizeText(text);
     if (typeof pattern === "string") {
@@ -2550,6 +2908,13 @@
     return pattern.regex.test(normalizedText);
   }
 
+  /**
+   * Checks if any tag in a work matches the whitelist (supports conditionals).
+   * If matched, the work bypasses all blocking rules.
+   * @param {string[]} tags
+   * @param {Array} whitelist - compiled whitelist entries
+   * @returns {boolean}
+   */
   function isTagWhitelisted(tags, whitelist) {
     return tags.some((tag) => {
       return whitelist.some((item) => {
@@ -2562,12 +2927,11 @@
           return matchPattern(tag, item.pattern, true);
         } else if (item.type === "conditional") {
           if (matchPattern(tag, item.block, true)) {
-            const hasConditionTag = tags.some((t) =>
-              matchPattern(t, item.condition, true),
-            );
             return (
-              (item.operator === "with" && hasConditionTag) ||
-              (item.operator === "unless" && !hasConditionTag)
+              (item.operator === "with" &&
+                matchesCondition(item.condition, tags, true)) ||
+              (item.operator === "unless" &&
+                !matchesCondition(item.condition, tags, true))
             );
           }
           return false;
@@ -2577,6 +2941,13 @@
     });
   }
 
+  /**
+   * Checks if a single tag should be blocked based on regular + conditional rules.
+   * @param {string} tag
+   * @param {Object} config
+   * @param {string[]} allTags - all tags on the work (needed for conditionals)
+   * @returns {{ blocked: boolean, type?: string, conditionDisplay?: string, operator?: string }}
+   */
   function shouldBlockTag(tag, config, allTags) {
     if (!config.conditionalTagBlacklist) config.conditionalTagBlacklist = [];
 
@@ -2600,14 +2971,33 @@
       if (!rule?.block) continue;
       if (!matchPattern(tag, rule.block, true)) continue;
       if (checkConditional(rule, allTags)) {
-        // Find the condition tag that triggered this
-        const conditionTag = allTags.find((t) =>
-          matchPattern(t, rule.condition, true),
-        );
+        // Collect display names for condition tags
+        const condition = rule.condition;
+        let conditionDisplay = "";
+        if (condition?.conditions) {
+          const names = [];
+          if (rule.operator === "with") {
+            condition.conditions.forEach((c) => {
+              const match = allTags.find((t) => matchPattern(t, c, true));
+              if (match) names.push(match);
+            });
+          } else {
+            condition.conditions.forEach((c) => {
+              const name = (c.originalText || c.text || "").replace(/\*/g, "");
+              if (name) names.push(name.trim());
+            });
+          }
+          if (names.length) conditionDisplay = names.join(", ");
+        } else if (condition) {
+          conditionDisplay = (condition.originalText || condition.text || "")
+            .replace(/\*/g, "")
+            .trim();
+        }
         return {
           blocked: true,
           type: "conditional",
-          conditionTag: conditionTag,
+          conditionDisplay: conditionDisplay,
+          operator: rule.operator,
         };
       }
     }
@@ -2615,6 +3005,13 @@
     return { blocked: false };
   }
 
+  /**
+   * Checks if a work's primary relationships/characters match user's config.
+   * Only first `relpad` relationships and `charpad` characters are checked.
+   * @param {Object} categorizedTags - from getCategorizedAndFlatTags
+   * @param {Object} config
+   * @returns {Object|null} reason object if blocked, null if passed
+   */
   function checkPrimaryPairing(categorizedTags, config) {
     const primaryRelationships = config.primaryRelationships || [];
     const primaryCharacters = config.primaryCharacters || [];
@@ -2630,16 +3027,42 @@
       .map((tag) => normalizeText(tag));
     const fandomTags = categorizedTags.fandoms.map((tag) => normalizeText(tag));
 
+    // Helper: extract sortable key + condition object from entry
+    // Group relationship rules by their condition key so each unique condition
+    // (e.g. "one fandom" vs "another fandom") is evaluated independently with OR logic
+    function getConditionInfo(entry) {
+      if (!entry.condition) return { key: "global", condObj: null };
+      if (entry.condition.conditions) {
+        return {
+          key:
+            JSON.stringify(
+              entry.condition.conditions.map((c) => c.text || ""),
+            ) +
+            "|" +
+            entry.condition.joinMode,
+          condObj: entry.condition,
+        };
+      }
+      return { key: entry.condition.text, condObj: entry.condition };
+    }
+
+    // Helper: check if condition matches fandom tags (handles single + multi-condition)
+    function conditionMatchesFandom(condObj, fandomTags) {
+      if (!condObj) return true;
+      if (condObj.conditions)
+        return matchesCondition(condObj, fandomTags, true);
+      return fandomTags.some((t) => matchPattern(t, condObj, true));
+    }
+
     // Group relationships by condition (OR logic within group)
     const relGroups = new Map();
     let hasGlobalRel = false;
     for (const entry of primaryRelationships) {
-      const key =
-        new RegExp(String.raw`.*${entry.condition}.*`, "i") || "global";
-      const item = entry.relationship || entry.item;
+      const { key, condObj } = getConditionInfo(entry);
+      const item = entry.relationship || entry.block;
       if (item) {
-        if (!relGroups.has(key)) relGroups.set(key, []);
-        relGroups.get(key).push(item);
+        if (!relGroups.has(key)) relGroups.set(key, { items: [], condObj });
+        relGroups.get(key).items.push(item);
         if (key === "global") hasGlobalRel = true;
       }
     }
@@ -2648,60 +3071,28 @@
     const charGroups = new Map();
     let hasGlobalChar = false;
     for (const entry of primaryCharacters) {
-      const key =
-        new RegExp(String.raw`.*${entry.condition}.*`, "i") || "global";
-      const item = new RegExp(String.raw`.*${entry.character || entry.item}.*`);
+      const { key, condObj } = getConditionInfo(entry);
+      const item = makeCharacterPattern(entry.character || entry.block);
       if (item) {
-        if (!charGroups.has(key)) charGroups.set(key, []);
-        charGroups.get(key).push(item);
+        if (!charGroups.has(key)) charGroups.set(key, { items: [], condObj });
+        charGroups.get(key).items.push(item);
         if (key === "global") hasGlobalChar = true;
       }
     }
 
-    // If all relationship requirements are conditional and none match current fandom, skip blocking
-    let skipRels = false;
-    if (
-      relGroups.size > 0 &&
-      !hasGlobalRel &&
-      !Array.from(relGroups.keys()).some(
-        (cond) => cond !== "global" && fandomTags.some((tag) => cond.test(tag)),
-      )
-    ) {
-      // No applicable relationship requirement for this fandom
-      skipRels = true;
-    }
-    // Same for characters
-    let skipChars = false;
-    if (
-      charGroups.size > 0 &&
-      !hasGlobalChar &&
-      !Array.from(charGroups.keys()).some(
-        (cond) => cond !== "global" && fandomTags.some((tag) => cond.test(tag)),
-      )
-    ) {
-      // No applicable character requirement for this fandom
-      skipChars = true;
-    }
-
     // OR logic: If any group is satisfied, permit the work
     let relationshipGroupSatisfied = false;
-    if (skipRels) {
-      relationshipGroupSatisfied = true;
-    } else {
-      for (const [condition, items] of relGroups) {
-        const conditionMet =
-          condition === "global" ||
-          fandomTags.some((tag) => condition.test(tag));
-        if (conditionMet) {
-          let ships = items.flatMap((ship) =>
-            relationshipPowerSet(ship.split("/")),
-          );
-          if (
-            ships.some((item) => relationshipTags.some((tag) => item.test(tag)))
-          ) {
-            relationshipGroupSatisfied = true;
-            break;
-          }
+    for (const [, group] of relGroups) {
+      if (conditionMatchesFandom(group.condObj, fandomTags)) {
+        if (
+          group.items.some((item) =>
+            relationshipTags.some((t) =>
+              matchRelationshipPattern(t, item, true),
+            ),
+          )
+        ) {
+          relationshipGroupSatisfied = true;
+          break;
         }
       }
       // If there are no relationship requirements, treat as satisfied
@@ -2709,20 +3100,15 @@
     }
 
     let characterGroupSatisfied = false;
-    if (skipChars) {
-      characterGroupSatisfied = true;
-    } else {
-      for (const [condition, items] of charGroups) {
-        const conditionMet =
-          condition === "global" ||
-          fandomTags.some((tag) => condition.test(tag));
-        if (conditionMet) {
-          if (
-            items.some((item) => characterTags.some((tag) => item.test(tag)))
-          ) {
-            characterGroupSatisfied = true;
-            break;
-          }
+    for (const [, group] of charGroups) {
+      if (conditionMatchesFandom(group.condObj, fandomTags)) {
+        if (
+          group.items.some((item) =>
+            characterTags.some((t) => matchPattern(t, item, true)),
+          )
+        ) {
+          characterGroupSatisfied = true;
+          break;
         }
       }
       // If there are no character requirements, treat as satisfied
@@ -2732,19 +3118,27 @@
     // Block if relationships are required and not satisfied
     if (relGroups.size > 0 && !relationshipGroupSatisfied) {
       return {
-        primaryPairing: `Missing required relationship(s)`,
+        primaryPairing: `Missing relationship(s)`,
+        _filterType: "primaryRelationships",
       };
     }
     // Block if characters are required and not satisfied
     if (charGroups.size > 0 && !characterGroupSatisfied) {
       return {
-        primaryPairing: `Missing required character(s)`,
+        primaryPairing: `Missing character(s)`,
+        _filterType: "primaryCharacters",
       };
     }
     // If neither are required, or both are satisfied, permit
     return null;
   }
 
+  // ── Blurb extraction ──────────────────────────────────
+
+  /**
+   * Parses chapter count text (e.g. "3/12", "5/?") into structured chapter info.
+   * @returns {{current: number, total: number|null, isComplete: boolean, isOngoing: boolean}|null}
+   */
   function getChapterInfo(ddElements) {
     const chaptersElement = ddElements.chapters;
     if (!chaptersElement) return null;
@@ -2762,6 +3156,12 @@
     };
   }
 
+  /**
+   * Calculates months since last update from a dd.updated element.
+   * Uses 30.4 days/month for the calculation.
+   * @param {Object} ddElements
+   * @returns {number|null}
+   */
   function getMonthsSinceUpdate(ddElements) {
     const dateElement = ddElements.updated;
     if (!dateElement) return null;
@@ -2773,7 +3173,15 @@
     return months;
   }
 
-  function getBlockReason(blockables, config, blurbElement, blurbType) {
+  /**
+   * Evaluates all blocking rules against a single blurb/work.
+   * @param {Object} blockables - extracted blurb data from selectFromBlurb
+   * @param {Object} config - the compiled config object
+   * @param {HTMLElement} blurbElement
+   * @param {string} blurbType - "work"|"series"|"collection"
+   * @returns {Array|null} list of reasons if blocked, null if not blocked
+   */
+  function getBlockReason(blockables, config, _blurbElement, blurbType) {
     const {
       completionStatus,
       authors,
@@ -2837,8 +3245,10 @@
           } else if (item.type === "conditional") {
             if (matchPattern(tag, item.block, true)) {
               // Check if any tag matches the condition pattern (supports wildcards)
-              const hasConditionTag = allTags.some((t) =>
-                matchPattern(t, item.condition, true),
+              const hasConditionTag = matchesCondition(
+                item.condition,
+                allTags,
+                true,
               );
               if (
                 (item.operator === "with" && hasConditionTag) ||
@@ -2868,11 +3278,7 @@
     const reasons = [];
     if (applyPrimaryFilters) {
       const primaryPairingReason = checkPrimaryPairing(categorizedTags, config);
-      if (primaryPairingReason)
-        reasons.push({
-          ...primaryPairingReason,
-          _filterType: "primaryRelationships",
-        }); // or primaryCharacters, but since it's combined, maybe choose one
+      if (primaryPairingReason) reasons.push(primaryPairingReason);
     }
     if (
       applyCompletionFilters &&
@@ -3020,25 +3426,25 @@
     }
 
     const blockedTags = [];
-    const conditionTags = new Set(); // Track condition tags separately
     allTags.forEach((tag) => {
       const blockResult = shouldBlockTag(tag, config, allTags);
       if (blockResult.blocked) {
-        blockedTags.push(tag);
-        // If it's a conditional block, also track the condition tag
-        if (blockResult.type === "conditional" && blockResult.conditionTag) {
-          conditionTags.add(blockResult.conditionTag);
+        // Collect human-readable tag names for the conditional display
+        // (e.g. "Major Character Death with Unhappy Ending")
+        if (
+          blockResult.type === "conditional" &&
+          blockResult.conditionDisplay
+        ) {
+          const op =
+            blockResult.operator === "unless"
+              ? "without"
+              : blockResult.operator;
+          blockedTags.push(`${tag} ${op} ${blockResult.conditionDisplay}`);
+        } else {
+          blockedTags.push(tag);
         }
       }
     });
-    // Add condition tags to the blocked tags list for display
-    if (conditionTags.size > 0) {
-      conditionTags.forEach((tag) => {
-        if (!blockedTags.includes(tag)) {
-          blockedTags.push(tag);
-        }
-      });
-    }
     if (blockedTags.length > 0)
       reasons.push({ tags: blockedTags, _filterType: "tagBlacklist" });
     const blockedAuthors = [];
@@ -3103,6 +3509,12 @@
     return Array.from(elements).map(getText);
   }
 
+  /**
+   * Extracts all blockable data from a blurb element: tags, authors, title,
+   * summary, word count, chapter info, language, fandoms, and work ID.
+   * @param {HTMLElement} blurbElement
+   * @returns {Object} blockables
+   */
   function selectFromBlurb(blurbElement) {
     if (blurbElement.classList.contains("collection")) {
       const tagElements = blurbElement.querySelectorAll("h5.tags a.tag");
