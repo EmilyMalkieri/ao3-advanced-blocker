@@ -2883,7 +2883,9 @@
 
   function matchRelationshipPattern(text, pattern, exactMatch) {
     const normalizedText = normalizeText(text);
-    return relationshipPowerSet(pattern).some((rel) => rel.test(normalizeText));
+    return relationshipPowerSet(pattern.split("/")).some((rel) =>
+      rel.test(normalizeText),
+    );
   }
 
   /**
@@ -3095,9 +3097,9 @@
           break;
         }
       }
-      // If there are no relationship requirements, treat as satisfied
-      if (relGroups.size === 0) relationshipGroupSatisfied = true;
     }
+    // If there are no relationship requirements, treat as satisfied
+    if (relGroups.size === 0) relationshipGroupSatisfied = true;
 
     let characterGroupSatisfied = false;
     for (const [, group] of charGroups) {
@@ -3111,9 +3113,9 @@
           break;
         }
       }
-      // If there are no character requirements, treat as satisfied
-      if (charGroups.size === 0) characterGroupSatisfied = true;
     }
+    // If there are no character requirements, treat as satisfied
+    if (charGroups.size === 0) characterGroupSatisfied = true;
 
     // Block if relationships are required and not satisfied
     if (relGroups.size > 0 && !relationshipGroupSatisfied) {
