@@ -2,9 +2,9 @@
 
 Userscript for Tampermonkey
 
-Fork of Wolfbatcat's/Blackbatcat's version (https://github.com/Wolfbatcat/ao3-userscripts, https://greasyfork.org/en/scripts/549942-ao3-advanced-blocker).
+Fork of Wolfbatcat's/Blackbatcat's version, available at https://github.com/Wolfbatcat/ao3-userscripts and https://greasyfork.org/en/scripts/549942-ao3-advanced-blocker.
 
-This is just my own version designed to my own preferences. Feel free to use it--I consider it a large improvement--but keep in mind the features labeled ⚠️ below.
+This is just my own version designed to my own preferences and usecase. Feel free to use it--I consider it a large improvement--but keep in mind the features labeled ⚠️ below.
 
 ## Migrating to this version
 
@@ -18,7 +18,7 @@ This script doesn't auto-update.
 
 ## Changes from upstream
 
-The as of this writing current version of the original is supplied in the `upstream` branch (though with my autoformat settings applied). If you want to see what's actually changed in the code, just compare the two branches.
+The as of this writing current version of the original is supplied in the `upstream` branch (though with my autoformat settings applied). If you want to see what's actually changed in the code, [just compare the two branches](https://github.com/EmilyMalkieri/ao3-advanced-blocker/compare/upstream...main).
 
 ### Easier matching
 
@@ -43,3 +43,6 @@ In plain terms, for any relationship you specify, we're matching not just that e
 ### Miscellaneous changes
 
 - We make an attempt at filtering out false positive matches for relationships, such as `past Your Favourite/Ship` and `Your Favourite/Ship (mentioned)`.
+- We still match relationships if none of your character filters apply to this fandom, and vice versa.
+- ~~Fixed an issue where blacklisted tags weren't being preserved.~~ (Since fixed in upstream.)
+
