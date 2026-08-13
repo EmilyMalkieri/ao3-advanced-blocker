@@ -3105,9 +3105,10 @@
     }
 
     // OR logic: If any group is satisfied, permit the work
-    let relationshipGroupSatisfied = false;
-    for (const [, group] of relGroups) {
+    let relationshipGroupSatisfied = true;
+    for (const group of relGroups.values()) {
       if (conditionMatchesFandom(group.condObj, fandomTags)) {
+        relationshipGroupSatisfied = false;
         if (
           group.items.some((item) =>
             relationshipTags.some((t) =>
@@ -3120,12 +3121,11 @@
         }
       }
     }
-    // If there are no relationship requirements, treat as satisfied
-    if (relGroups.size === 0) relationshipGroupSatisfied = true;
 
-    let characterGroupSatisfied = false;
-    for (const [, group] of charGroups) {
+    let characterGroupSatisfied = true;
+    for (const group of charGroups.values()) {
       if (conditionMatchesFandom(group.condObj, fandomTags)) {
+        characterGroupSatisfied = false;
         if (
           group.items.some((item) =>
             characterTags.some((t) => matchPattern(t, item, true)),
@@ -3136,18 +3136,16 @@
         }
       }
     }
-    // If there are no character requirements, treat as satisfied
-    if (charGroups.size === 0) characterGroupSatisfied = true;
 
     // Block if relationships are required and not satisfied
-    if (relGroups.size > 0 && !relationshipGroupSatisfied) {
+    if (!relationshipGroupSatisfied) {
       return {
         primaryPairing: `Missing relationship(s)`,
         _filterType: "primaryRelationships",
       };
     }
     // Block if characters are required and not satisfied
-    if (charGroups.size > 0 && !characterGroupSatisfied) {
+    if (!characterGroupSatisfied) {
       return {
         primaryPairing: `Missing character(s)`,
         _filterType: "primaryCharacters",
