@@ -2,7 +2,7 @@
 // @name          AO3: Advanced Blocker
 // @version       4.2.4
 // @description   Block works by tags, authors, titles, word counts, and more. Filter by language, completion status, and primary pairings with customizable highlighting.
-// @author        BlackBatCat
+// @author        BlackBatCat, EmilyMalkieri
 // @match         *://archiveofourown.org/
 // @match         *://archiveofourown.org/tags/*
 // @match         *://archiveofourown.org/works*
@@ -16,9 +16,6 @@
 // @require       https://update.greasyfork.org/scripts/552743/1859007/AO3%3A%20Menu%20Helpers%20Library.js?v=2.3.0
 // @grant         none
 // @run-at        document-end
-// @namespace
-// @downloadURL https://update.greasyfork.org/scripts/549942/AO3%3A%20Advanced%20Blocker.user.js
-// @updateURL https://update.greasyfork.org/scripts/549942/AO3%3A%20Advanced%20Blocker.meta.js
 // ==/UserScript==
 
 (function () {
@@ -2867,24 +2864,39 @@
   // ── Block evaluation ──────────────────────────────────
 
   /**
-   * Create a regex pattern for a character
+   * Create a pattern that matches surrounding a search text
    * @param {string} text
    * @returns A pattern object accepted by matchPattern
    */
-  function makeCharacterPattern(text) {
-    const pattern = new ReqExp(String.raw`.*\b${item}\b.*`, "i");
+  function makePattern(text) {
+    const pattern = new RegExp(String.raw`.*${text}.*`, "i");
 
     return {
+      text,
+      originalText: text,
       hasWildcard: true,
       regex: pattern,
       exactRegex: pattern,
     };
   }
 
+  /**
+   * Create a regex pattern for a character's name
+   * @param {string} text
+   * @returns A pattern object accepted by matchPattern
+   */
+  function makePatternWithWordBoundaries(text) {
+    return {
+      ...makePattern(String.raw`\b${text}\b`),
+      text,
+      originalText: text,
+    };
+  }
+
   function matchRelationshipPattern(text, pattern, exactMatch) {
     const normalizedText = normalizeText(text);
-    return relationshipPowerSet(pattern.split("/")).some((rel) =>
-      rel.test(normalizeText),
+    return relationshipPowerSet(pattern.originalText.split("/")).some((rel) =>
+      rel.test(normalizedText),
     );
   }
 
@@ -2895,9 +2907,7 @@
   function matchPattern(text, pattern, exactMatch) {
     const normalizedText = normalizeText(text);
     if (typeof pattern === "string") {
-      return exactMatch
-        ? normalizedText === pattern
-        : normalizedText.includes(pattern);
+      return matchPattern(text, compilePattern(pattern), exactMatch);
     }
     if (!pattern.hasWildcard) {
       return exactMatch
@@ -3050,10 +3060,20 @@
 
     // Helper: check if condition matches fandom tags (handles single + multi-condition)
     function conditionMatchesFandom(condObj, fandomTags) {
+      const wrap = makePattern;
       if (!condObj) return true;
-      if (condObj.conditions)
-        return matchesCondition(condObj, fandomTags, true);
-      return fandomTags.some((t) => matchPattern(t, condObj, true));
+
+      const single_cond = wrap(
+        condObj.condition?.originalText ?? condObj.originalText ?? condObj.text,
+      );
+
+      const fandomRestriction = {
+        ...condObj,
+        ...single_cond,
+        condition: single_cond,
+        conditions: condObj.conditions?.map((cond) => wrap(cond.originalText)),
+      };
+      return matchesCondition(fandomRestriction, fandomTags, true);
     }
 
     // Group relationships by condition (OR logic within group)
@@ -3074,7 +3094,9 @@
     let hasGlobalChar = false;
     for (const entry of primaryCharacters) {
       const { key, condObj } = getConditionInfo(entry);
-      const item = makeCharacterPattern(entry.character || entry.block);
+      const item = makePatternWithWordBoundaries(
+        entry.character || entry.block,
+      );
       if (item) {
         if (!charGroups.has(key)) charGroups.set(key, { items: [], condObj });
         charGroups.get(key).items.push(item);
